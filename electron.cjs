@@ -5,6 +5,7 @@ const fs = require('fs')
 
 let mainWindow
 let browserWindows = {}
+let searchWindow = null  // Fenêtre dédiée à la recherche manuelle
 
 // ── SYSTÈME LICENCE ───────────────────────────────────────────────
 const LICENCE_FILE = path.join(app.getPath('userData'), 'licence.json')
@@ -160,6 +161,39 @@ function buildScript(platform, contenu) {
   }
   return scripts[platform] || `(function(){const ed=document.querySelector('[contenteditable="true"],textarea');if(ed){ed.focus();if(ed.tagName==='TEXTAREA'){ed.value=${escaped};ed.dispatchEvent(new Event('input',{bubbles:true}))}else{document.execCommand('insertText',false,${escaped})}}})();`
 }
+
+// ── FENÊTRE DE RECHERCHE MANUELLE (enrichissement prospects) ──────
+ipcMain.handle('open-search-window', async (event, { url, prospectId }) => {
+  // Si une fenêtre de recherche existe déjà, on la réutilise
+  if (searchWindow && !searchWindow.isDestroyed()) {
+    searchWindow.focus()
+    await searchWindow.loadURL(url, {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    })
+    return { success: true }
+  }
+
+  searchWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    title: 'Recherche prospect — Pilotage',
+    backgroundColor: '#0D1B2A',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true,
+      partition: 'persist:pilotage_search',
+    },
+  })
+
+  searchWindow.on('closed', () => { searchWindow = null })
+
+  await searchWindow.loadURL(url, {
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+  })
+
+  return { success: true }
+})
 
 app.whenReady().then(createWindow)
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

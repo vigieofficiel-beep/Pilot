@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkLicence:    ()     => ipcRenderer.invoke('check-licence'),
   activateLicence: (code) => ipcRenderer.invoke('activate-licence', code),
   getLicenceInfo:  ()     => ipcRenderer.invoke('get-licence-info'),
+  // Recherche manuelle de prospects (enrichissement)
+  openSearchWindow: (url, prospectId) => ipcRenderer.invoke('open-search-window', { url, prospectId }),
 })

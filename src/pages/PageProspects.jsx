@@ -17,7 +17,6 @@ const COLONNES = [
   { id: 'perdu',    label: 'Perdu',    color: '#C75B4E', emoji: '❌',  statutBase: 'perdu' },
 ]
 
-// Mapping inverse base -> colonne kanban (pour gérer aussi 'interesse' qui mappe sur contact)
 function statutBaseToColonne(statut) {
   if (!statut) return 'prospect'
   const found = COLONNES.find(c => c.statutBase === statut)
@@ -101,9 +100,7 @@ async function apiPatch(path, body) {
 }
 
 async function apiDelete(path) {
-  const res = await fetch(`${API_URL}${path}`, {
-    method: 'DELETE'
-  })
+  const res = await fetch(`${API_URL}${path}`, { method: 'DELETE' })
   if (!res.ok && res.status !== 204) throw new Error(`API DELETE ${path} : ${res.status}`)
   return true
 }
@@ -138,9 +135,6 @@ function parseCSV(text) {
   return rows
 }
 
-// ============================================
-// STYLE INPUT
-// ============================================
 const iS = {
   width: '100%', padding: '9px 12px', borderRadius: 8,
   background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
@@ -155,16 +149,19 @@ export default function PageProspects({ project }) {
   const [prospects,     setProspects]     = useState([])
   const [sessions,      setSessions]      = useState([])
   const [loading,       setLoading]       = useState(true)
-  const [view,          setView]          = useState('kanban')   // 'kanban' | 'liste' | 'sessions'
+  const [view,          setView]          = useState('kanban')
   const [selected,      setSelected]      = useState(null)
   const [selection,     setSelection]     = useState(new Set())
   const [filterSession, setFilterSession] = useState(null)
   const [msg,           setMsg]           = useState(null)
 
-  // Recherche auto via webhook n8n
   const [autoSecteur,   setAutoSecteur]   = useState('')
   const [autoDept,      setAutoDept]      = useState('75')
   const [autoSearching, setAutoSearching] = useState(false)
+
+  // --- États enrichissement manuel dans le drawer ---
+  const [enrichData,    setEnrichData]    = useState({ email: '', telephone: '', site_web: '' })
+  const [enrichSaving,  setEnrichSaving]  = useState(false)
 
   const csvRef = useRef(null)
 
@@ -173,7 +170,7 @@ export default function PageProspects({ project }) {
     setTimeout(() => setMsg(null), duration)
   }
 
-  // --- Chargement initial des prospects et sessions ---
+  // --- Chargement initial ---
   const fetchAll = useCallback(async () => {
     setLoading(true)
     try {
@@ -189,26 +186,28 @@ export default function PageProspects({ project }) {
     setLoading(false)
   }, [])
 
-  useEffect(() => {
-    fetchAll()
-  }, [fetchAll])
+  useEffect(() => { fetchAll() }, [fetchAll])
 
-  // --- Filtre prospects par session si actif ---
+  // --- Quand un prospect est sélectionné, on initialise les champs enrichissement ---
+  useEffect(() => {
+    if (selected) {
+      setEnrichData({
+        email: selected.email || '',
+        telephone: selected.telephone || '',
+        site_web: selected.site_web || '',
+      })
+    }
+  }, [selected])
+
   const prospectsAffiches = filterSession
     ? prospects.filter(p => p.session_id === filterSession)
     : prospects
 
-  // --- Stats ---
   const totalScore = prospectsAffiches.reduce((acc, p) => acc + (p.score_qualite || 0), 0)
 
-  // --- Drag & drop : changer le statut ---
-  const onDragStart = (e, prospect) => {
-    e.dataTransfer.setData('prospectId', prospect.id)
-  }
-
-  const onDragOver = (e) => {
-    e.preventDefault()
-  }
+  // --- Drag & drop ---
+  const onDragStart = (e, prospect) => { e.dataTransfer.setData('prospectId', prospect.id) }
+  const onDragOver = (e) => { e.preventDefault() }
 
   const onDrop = async (e, colonne) => {
     e.preventDefault()
@@ -220,7 +219,6 @@ export default function PageProspects({ project }) {
     const nouveauStatut = colonneToStatutBase(colonne.id)
     if (prospect.statut === nouveauStatut) return
 
-    // Mise à jour optimiste de l'UI
     const ancienStatut = prospect.statut
     setProspects(curr => curr.map(p => p.id === prospectId ? { ...p, statut: nouveauStatut } : p))
 
@@ -232,7 +230,6 @@ export default function PageProspects({ project }) {
       await apiPatch(`/prospects?id=eq.${prospectId}`, update)
       showMsg(`✅ ${prospect.nom_entreprise} → ${colonne.label}`, 2000)
     } catch (err) {
-      // Rollback en cas d'erreur
       setProspects(curr => curr.map(p => p.id === prospectId ? { ...p, statut: ancienStatut } : p))
       showMsg(`❌ Erreur mise à jour : ${err.message}`)
     }
@@ -245,12 +242,14 @@ export default function PageProspects({ project }) {
     if (!confirm(`Supprimer "${prospect.nom_entreprise}" ?`)) return
 
     setProspects(curr => curr.filter(p => p.id !== id))
+    if (selected?.id === id) setSelected(null)
+
     try {
       await apiDelete(`/prospects?id=eq.${id}`)
       showMsg(`🗑️ ${prospect.nom_entreprise} supprimé`, 2000)
     } catch (err) {
       showMsg(`❌ Erreur suppression : ${err.message}`)
-      fetchAll() // Re-sync en cas d'erreur
+      fetchAll()
     }
   }
 
@@ -282,7 +281,7 @@ export default function PageProspects({ project }) {
     })
   }
 
-  // --- Lancement recherche automatique via n8n ---
+  // --- Recherche auto via n8n ---
   const lancerAutoRecherche = async () => {
     if (!autoSecteur || !autoDept) {
       showMsg('⚠️ Choisis un secteur ET un département.', 2500)
@@ -307,14 +306,13 @@ export default function PageProspects({ project }) {
       const total = result.total_scrapes || 0
 
       if (nouveaux === 0 && doublons > 0) {
-        showMsg(`⚠️ Tous les ${doublons} prospects sont déjà en base. Essaie un autre département ou un autre secteur.`, 5000)
+        showMsg(`⚠️ Tous les ${doublons} prospects sont déjà en base. Essaie un autre département.`, 5000)
       } else if (nouveaux > 0) {
-        showMsg(`✅ ${nouveaux} nouveau(x) prospect(s) ajouté(s) sur ${total} scrapés (${doublons} doublons ignorés)`, 5000)
+        showMsg(`✅ ${nouveaux} nouveau(x) prospect(s) ajouté(s) (${doublons} doublons ignorés)`, 5000)
       } else {
-        showMsg(`⚠️ Aucun résultat trouvé pour cette recherche.`, 4000)
+        showMsg(`⚠️ Aucun résultat trouvé.`, 4000)
       }
 
-      // Re-fetch pour voir les nouveaux prospects
       await fetchAll()
     } catch (err) {
       showMsg(`❌ Erreur agent : ${err.message}`, 5000)
@@ -329,19 +327,11 @@ export default function PageProspects({ project }) {
     const reader = new FileReader()
     reader.onload = async (ev) => {
       const rows = parseCSV(ev.target.result)
-      if (rows.length === 0) {
-        showMsg('❌ Fichier vide ou format invalide.')
-        return
-      }
-      let nouveaux = 0
-      let doublons = 0
-      let erreurs = 0
+      if (rows.length === 0) { showMsg('❌ Fichier vide ou format invalide.'); return }
+      let nouveaux = 0, doublons = 0, erreurs = 0
 
       for (const row of rows) {
-        if (!row.siret) {
-          erreurs++
-          continue
-        }
+        if (!row.siret) { erreurs++; continue }
         try {
           const result = await apiPost('/prospects', {
             siret: row.siret,
@@ -362,15 +352,64 @@ export default function PageProspects({ project }) {
           erreurs++
         }
       }
-      showMsg(`✅ Import terminé : ${nouveaux} ajouté(s), ${doublons} doublon(s), ${erreurs} erreur(s)`, 5000)
+      showMsg(`✅ Import : ${nouveaux} ajouté(s), ${doublons} doublon(s), ${erreurs} erreur(s)`, 5000)
       await fetchAll()
     }
     reader.readAsText(file, 'UTF-8')
     e.target.value = ''
   }
 
-  // --- Lien Gallica / API gouv ---
   const lienAnnuaire = (siren) => `https://annuaire-entreprises.data.gouv.fr/entreprise/${siren}`
+
+  // --- ENRICHISSEMENT MANUEL ---
+
+  // Ouvre Google dans BrowserWindow Electron avec recherche pré-remplie
+  const ouvrirRechercheManuelle = (prospect) => {
+    if (!prospect) return
+    const query = `"${prospect.nom_entreprise}" ${prospect.ville || ''} contact email`
+    const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`
+
+    if (window.electronAPI && window.electronAPI.openSearchWindow) {
+      window.electronAPI.openSearchWindow(url, prospect.id)
+    } else {
+      // Fallback navigateur si pas dans Electron (mode dev web pur)
+      window.open(url, '_blank')
+    }
+  }
+
+  // Sauvegarde des champs enrichis en base
+  const sauvegarderEnrichissement = async () => {
+    if (!selected) return
+    setEnrichSaving(true)
+    try {
+      const updates = {}
+      if (enrichData.email !== (selected.email || '')) updates.email = enrichData.email || null
+      if (enrichData.telephone !== (selected.telephone || '')) updates.telephone = enrichData.telephone || null
+      if (enrichData.site_web !== (selected.site_web || '')) updates.site_web = enrichData.site_web || null
+
+      if (Object.keys(updates).length === 0) {
+        showMsg('⚠️ Aucune modification à enregistrer', 2000)
+        setEnrichSaving(false)
+        return
+      }
+
+      // Si on a maintenant un email mais que email_introuvable était à true, on remet à false
+      if (updates.email) {
+        updates.email_introuvable = false
+      }
+
+      const result = await apiPatch(`/prospects?id=eq.${selected.id}`, updates)
+      const updated = Array.isArray(result) ? result[0] : result
+
+      // Mise à jour de l'UI
+      setProspects(curr => curr.map(p => p.id === selected.id ? { ...p, ...updates } : p))
+      setSelected(prev => ({ ...prev, ...updates }))
+      showMsg(`✅ Contact enrichi pour ${selected.nom_entreprise}`, 3000)
+    } catch (err) {
+      showMsg(`❌ Erreur enregistrement : ${err.message}`, 5000)
+    }
+    setEnrichSaving(false)
+  }
 
   // ============================================
   // RENDU
@@ -386,7 +425,7 @@ export default function PageProspects({ project }) {
   return (
     <div style={{height: '100%', display: 'flex', flexDirection: 'column', gap: 12, padding: 20, overflow: 'hidden'}}>
 
-      {/* HEADER STATS + ACTIONS */}
+      {/* HEADER */}
       <div style={{display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0}}>
         <div style={{padding: '12px 16px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)'}}>
           <p style={{fontSize: 10, color: 'rgba(237,232,219,0.4)', margin: '0 0 4px'}}>Total</p>
@@ -402,6 +441,12 @@ export default function PageProspects({ project }) {
           <p style={{fontSize: 10, color: 'rgba(237,232,219,0.4)', margin: '0 0 4px'}}>Score moyen</p>
           <p style={{fontSize: 22, fontWeight: 800, color: '#D4A853', margin: 0}}>
             {prospectsAffiches.length > 0 ? (totalScore / prospectsAffiches.length).toFixed(1) : '–'}
+          </p>
+        </div>
+        <div style={{padding: '12px 16px', borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)'}}>
+          <p style={{fontSize: 10, color: 'rgba(237,232,219,0.4)', margin: '0 0 4px'}}>Avec email</p>
+          <p style={{fontSize: 22, fontWeight: 800, color: '#A85BC7', margin: 0}}>
+            {prospectsAffiches.filter(p => p.email).length}
           </p>
         </div>
 
@@ -428,7 +473,6 @@ export default function PageProspects({ project }) {
             🔄 Actualiser
           </button>
 
-          {/* Toggle vue */}
           <div style={{display: 'flex', gap: 4, padding: 4, borderRadius: 10, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)'}}>
             <button onClick={() => setView('kanban')}
               style={{padding: '6px 10px', borderRadius: 6, border: 'none', background: view === 'kanban' ? project.color : 'transparent', color: view === 'kanban' ? '#0D1B2A' : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: 700, cursor: 'pointer'}}>
@@ -489,9 +533,7 @@ export default function PageProspects({ project }) {
           {COLONNES.map(col => {
             const items = prospectsAffiches.filter(p => statutBaseToColonne(p.statut) === col.id)
             return (
-              <div key={col.id}
-                onDragOver={onDragOver}
-                onDrop={(e) => onDrop(e, col)}
+              <div key={col.id} onDragOver={onDragOver} onDrop={(e) => onDrop(e, col)}
                 style={{width: 240, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8}}>
                 <div style={{padding: '8px 12px', borderRadius: 10, background: `${col.color}15`, border: `1px solid ${col.color}30`, display: 'flex', alignItems: 'center', gap: 6}}>
                   <span>{col.emoji}</span>
@@ -500,10 +542,7 @@ export default function PageProspects({ project }) {
                 </div>
                 <div style={{flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, minHeight: 50}}>
                   {items.map(p => (
-                    <div key={p.id}
-                      draggable
-                      onDragStart={(e) => onDragStart(e, p)}
-                      onClick={() => setSelected(p)}
+                    <div key={p.id} draggable onDragStart={(e) => onDragStart(e, p)} onClick={() => setSelected(p)}
                       style={{
                         background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
                         borderRadius: 10, padding: '10px 12px', cursor: 'grab', transition: 'all 0.15s'
@@ -514,7 +553,10 @@ export default function PageProspects({ project }) {
                       {p.ville && <p style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', margin: '0 0 4px'}}>{p.ville}{p.code_postal ? ` (${p.code_postal})` : ''}</p>}
                       <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6}}>
                         <span style={{fontSize: 10, color: 'rgba(237,232,219,0.3)'}}>{p.source || 'manuel'}</span>
-                        {p.score_qualite && <span style={{fontSize: 11, fontWeight: 800, color: scoreColor(p.score_qualite)}}>{p.score_qualite}/5</span>}
+                        <div style={{display: 'flex', gap: 6, alignItems: 'center'}}>
+                          {p.email && <span style={{fontSize: 10, color: '#5BC78A'}} title={p.email}>📧</span>}
+                          {p.score_qualite && <span style={{fontSize: 11, fontWeight: 800, color: scoreColor(p.score_qualite)}}>{p.score_qualite}/5</span>}
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -551,6 +593,7 @@ export default function PageProspects({ project }) {
                     <span style={{fontSize: 13, fontWeight: 600, color: '#EDE8DB'}}>{p.nom_entreprise}</span>
                     {p.ville && <span style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', marginLeft: 8}}>{p.ville}</span>}
                   </div>
+                  {p.email && <span style={{fontSize: 11, color: '#5BC78A', whiteSpace: 'nowrap'}} title={p.email}>📧 {p.email.length > 25 ? p.email.substring(0, 25) + '…' : p.email}</span>}
                   <span style={{fontSize: 10, color: col.color, background: `${col.color}15`, padding: '2px 8px', borderRadius: 8, fontWeight: 700, whiteSpace: 'nowrap'}}>
                     {col.emoji} {col.label}
                   </span>
@@ -558,9 +601,7 @@ export default function PageProspects({ project }) {
                   <button onClick={e => { e.stopPropagation(); supprimer(p.id) }}
                     style={{background: 'transparent', border: 'none', cursor: 'pointer', color: 'rgba(237,232,219,0.2)', fontSize: 14, padding: 4}}
                     onMouseEnter={e => e.currentTarget.style.color = '#C75B4E'}
-                    onMouseLeave={e => e.currentTarget.style.color = 'rgba(237,232,219,0.2)'}>
-                    🗑️
-                  </button>
+                    onMouseLeave={e => e.currentTarget.style.color = 'rgba(237,232,219,0.2)'}>🗑️</button>
                 </div>
               )
             })
@@ -568,11 +609,11 @@ export default function PageProspects({ project }) {
         </div>
       )}
 
-      {/* VUE SESSIONS (HISTORIQUE DES RECHERCHES) */}
+      {/* VUE SESSIONS */}
       {view === 'sessions' && (
         <div style={{flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8}}>
           {sessions.length === 0
-            ? <div style={{padding: 40, textAlign: 'center', color: 'rgba(237,232,219,0.3)', fontSize: 13}}>Aucune session. Lance une prospection auto pour créer la première.</div>
+            ? <div style={{padding: 40, textAlign: 'center', color: 'rgba(237,232,219,0.3)', fontSize: 13}}>Aucune session.</div>
             : sessions.map(s => {
               const dateObj = new Date(s.created_at)
               const dateStr = dateObj.toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -609,7 +650,9 @@ export default function PageProspects({ project }) {
         <div onClick={() => setSelected(null)}
           style={{position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100, display: 'flex', justifyContent: 'flex-end'}}>
           <div onClick={e => e.stopPropagation()}
-            style={{width: 480, maxWidth: '90%', height: '100%', background: '#0D1B2A', borderLeft: `1px solid ${project.color}30`, padding: 24, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16}}>
+            style={{width: 520, maxWidth: '95%', height: '100%', background: '#0D1B2A', borderLeft: `1px solid ${project.color}30`, padding: 24, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16}}>
+
+            {/* Header */}
             <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12}}>
               <div>
                 <h2 style={{fontSize: 18, fontWeight: 800, color: '#EDE8DB', margin: '0 0 4px'}}>{selected.nom_entreprise}</h2>
@@ -618,6 +661,7 @@ export default function PageProspects({ project }) {
               <button onClick={() => setSelected(null)} style={{background: 'transparent', border: 'none', color: 'rgba(237,232,219,0.5)', fontSize: 20, cursor: 'pointer'}}>✕</button>
             </div>
 
+            {/* Métadonnées */}
             <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8}}>
               <div style={{padding: '8px 12px', borderRadius: 8, background: 'rgba(255,255,255,0.03)'}}>
                 <p style={{fontSize: 10, color: 'rgba(237,232,219,0.4)', margin: '0 0 2px'}}>SIRET</p>
@@ -641,21 +685,41 @@ export default function PageProspects({ project }) {
               )}
             </div>
 
-            {(selected.email || selected.telephone || selected.site_web) && (
-              <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
-                <p style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', margin: 0}}>Contact</p>
-                {selected.email && <a href={`mailto:${selected.email}`} style={{color: '#5BA3C7', fontSize: 13, textDecoration: 'none'}}>📧 {selected.email}</a>}
-                {selected.telephone && <a href={`tel:${selected.telephone}`} style={{color: '#5BA3C7', fontSize: 13, textDecoration: 'none'}}>📞 {selected.telephone}</a>}
-                {selected.site_web && <a href={selected.site_web} target="_blank" rel="noopener noreferrer" style={{color: '#5BA3C7', fontSize: 13, textDecoration: 'none'}}>🌐 {selected.site_web}</a>}
+            {/* SECTION ENRICHISSEMENT MANUEL */}
+            <div style={{padding: '16px', borderRadius: 12, background: `${project.color}08`, border: `1px solid ${project.color}20`, display: 'flex', flexDirection: 'column', gap: 12}}>
+              <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8}}>
+                <p style={{fontSize: 12, fontWeight: 700, color: project.color, margin: 0}}>🔍 Enrichir le contact</p>
+                <button onClick={() => ouvrirRechercheManuelle(selected)}
+                  style={{padding: '6px 12px', borderRadius: 8, border: 'none', background: project.color, color: '#0D1B2A', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap'}}>
+                  🌐 Chercher sur Google
+                </button>
               </div>
-            )}
 
-            {!selected.email && !selected.telephone && (
-              <div style={{padding: 12, borderRadius: 8, background: 'rgba(212,168,83,0.08)', border: '1px solid rgba(212,168,83,0.2)', color: '#D4A853', fontSize: 12}}>
-                ⚠️ Pas de contact connu. L'agent EmailFinder enrichira ce prospect prochainement.
+              <div style={{display: 'flex', flexDirection: 'column', gap: 8}}>
+                <div>
+                  <label style={{fontSize: 10, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 3}}>📧 Email</label>
+                  <input type="email" value={enrichData.email} onChange={e => setEnrichData(d => ({ ...d, email: e.target.value }))}
+                    placeholder="contact@exemple.fr" style={iS}/>
+                </div>
+                <div>
+                  <label style={{fontSize: 10, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 3}}>📞 Téléphone</label>
+                  <input type="tel" value={enrichData.telephone} onChange={e => setEnrichData(d => ({ ...d, telephone: e.target.value }))}
+                    placeholder="01 23 45 67 89" style={iS}/>
+                </div>
+                <div>
+                  <label style={{fontSize: 10, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 3}}>🌐 Site web</label>
+                  <input type="url" value={enrichData.site_web} onChange={e => setEnrichData(d => ({ ...d, site_web: e.target.value }))}
+                    placeholder="https://www.exemple.fr" style={iS}/>
+                </div>
               </div>
-            )}
 
+              <button onClick={sauvegarderEnrichissement} disabled={enrichSaving}
+                style={{padding: '10px 14px', borderRadius: 8, border: 'none', background: '#5BC78A', color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: enrichSaving ? 'not-allowed' : 'pointer', opacity: enrichSaving ? 0.6 : 1}}>
+                {enrichSaving ? '⏳ Enregistrement...' : '💾 Enregistrer le contact'}
+              </button>
+            </div>
+
+            {/* Sources externes */}
             <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
               <p style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', margin: 0}}>Sources externes</p>
               <a href={lienAnnuaire(selected.siren)} target="_blank" rel="noopener noreferrer"
@@ -671,6 +735,7 @@ export default function PageProspects({ project }) {
               </div>
             )}
 
+            {/* Actions footer */}
             <div style={{marginTop: 'auto', display: 'flex', gap: 8}}>
               <button onClick={() => supprimer(selected.id)}
                 style={{padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(199,91,78,0.4)', background: 'rgba(199,91,78,0.08)', color: '#C75B4E', fontSize: 12, fontWeight: 700, cursor: 'pointer'}}>
@@ -684,9 +749,6 @@ export default function PageProspects({ project }) {
   )
 }
 
-// ============================================
-// HELPER COULEURS SCORE
-// ============================================
 function scoreColor(score) {
   if (score >= 4) return '#5BC78A'
   if (score >= 3) return '#D4A853'
