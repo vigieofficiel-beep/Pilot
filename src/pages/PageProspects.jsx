@@ -200,6 +200,40 @@ async function genererMessageIA({ prospectId, projectConfig, allowNoEmail = fals
   return res.json()
 }
 
+/**
+ * Appelle l'agent Mailer sur le VPS pour envoyer l'email de prospection via Resend.
+ */
+async function envoyerEmailViaAgent({ prospectId, sujet, message }) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) {
+    throw new Error('Clé API Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
+  }
+
+  const res = await fetch(`${AGENTS_API_URL}/mailer/envoyer`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey,
+    },
+    body: JSON.stringify({
+      prospect_id: prospectId,
+      sujet,
+      message,
+    }),
+  })
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const errJson = await res.json()
+      detail = errJson.detail || detail
+    } catch {}
+    throw new Error(detail)
+  }
+
+  return res.json()
+}
+
 // ============================================
 // HELPERS LOCAL STORAGE — Messages générés
 // ============================================
@@ -286,6 +320,9 @@ export default function PageProspects({ project }) {
   const [iaGenerating,  setIaGenerating]  = useState(false)
   const [iaCopied,      setIaCopied]      = useState(null)  // 'sujet' | 'message' | null
 
+  // --- États envoi email IA ---
+  const [iaSending,     setIaSending]     = useState(false)
+
   const csvRef = useRef(null)
 
   const showMsg = (text, duration = 3500) => {
@@ -319,9 +356,19 @@ export default function PageProspects({ project }) {
         telephone: selected.telephone || '',
         site_web: selected.site_web || '',
       })
-      // Charger le message généré stocké en local (s'il existe)
-      const stored = getStoredMessage(selected.id)
-      setIaMessage(stored)
+      // Si un email a déjà été envoyé, on charge sujet+message depuis la base (priorité sur le local)
+      if (selected.email_envoye_le && selected.email_sujet) {
+        setIaMessage({
+          sujet: selected.email_sujet,
+          message: selected.email_message || '',
+          generated_at: selected.email_envoye_le,
+          tokens_used: null,
+        })
+      } else {
+        // Sinon : charger le message stocké en local (s'il existe)
+        const stored = getStoredMessage(selected.id)
+        setIaMessage(stored)
+      }
       setIaCopied(null)
     } else {
       setIaMessage(null)
@@ -614,6 +661,67 @@ export default function PageProspects({ project }) {
     showMsg('🗑️ Message supprimé', 2000)
   }
 
+  // --- ENVOI EMAIL ---
+
+  const lancerEnvoiEmail = async () => {
+    if (!selected || !iaMessage) return
+
+    // Vérifs avant envoi
+    if (!selected.email || selected.email_introuvable) {
+      showMsg('❌ Pas d\'email valide pour ce prospect', 4000)
+      return
+    }
+    if (selected.email_envoye_le) {
+      showMsg('⚠️ Un email a déjà été envoyé à ce prospect', 4000)
+      return
+    }
+    if (!iaMessage.sujet?.trim() || !iaMessage.message?.trim()) {
+      showMsg('❌ Sujet et message requis', 3000)
+      return
+    }
+
+    // Confirmation utilisateur
+    const ok = confirm(
+      `Envoyer cet email à ${selected.nom_entreprise} ?\n\n` +
+      `Destinataire : ${selected.email}\n` +
+      `Sujet : ${iaMessage.sujet}\n\n` +
+      `L'envoi est définitif et ne pourra pas être annulé.`
+    )
+    if (!ok) return
+
+    setIaSending(true)
+    try {
+      const result = await envoyerEmailViaAgent({
+        prospectId: selected.id,
+        sujet: iaMessage.sujet,
+        message: iaMessage.message,
+      })
+
+      // Mise à jour locale du prospect avec les infos d'envoi
+      const updates = {
+        statut: 'contacte',
+        contacte_le: result.envoye_le,
+        email_envoye_le: result.envoye_le,
+        email_resend_id: result.resend_id,
+        email_sujet: iaMessage.sujet,
+        email_message: iaMessage.message,
+      }
+      setProspects(curr => curr.map(p => p.id === selected.id ? { ...p, ...updates } : p))
+      setSelected(prev => ({ ...prev, ...updates }))
+
+      // Mise à jour locale du iaMessage pour afficher le statut "envoyé"
+      setIaMessage(prev => ({ ...prev, generated_at: result.envoye_le }))
+
+      // Le message en localStorage devient obsolète puisqu'il est maintenant en base
+      deleteStoredMessage(selected.id)
+
+      showMsg(`✅ Email envoyé à ${result.prospect_email}`, 5000)
+    } catch (err) {
+      showMsg(`❌ Erreur envoi : ${err.message}`, 6000)
+    }
+    setIaSending(false)
+  }
+
   // ============================================
   // RENDU
   // ============================================
@@ -746,6 +854,7 @@ export default function PageProspects({ project }) {
                 <div style={{flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, minHeight: 50}}>
                   {items.map(p => {
                     const hasMessage = !!getStoredMessage(p.id)
+                    const emailSent = !!p.email_envoye_le
                     return (
                       <div key={p.id} draggable onDragStart={(e) => onDragStart(e, p)} onClick={() => setSelected(p)}
                         style={{
@@ -759,7 +868,8 @@ export default function PageProspects({ project }) {
                         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6}}>
                           <span style={{fontSize: 10, color: 'rgba(237,232,219,0.3)'}}>{p.source || 'manuel'}</span>
                           <div style={{display: 'flex', gap: 6, alignItems: 'center'}}>
-                            {hasMessage && <span style={{fontSize: 10, color: '#A85BC7'}} title="Message IA généré">✨</span>}
+                            {emailSent && <span style={{fontSize: 10, color: '#5BC78A'}} title={`Email envoyé le ${new Date(p.email_envoye_le).toLocaleDateString('fr-FR')}`}>📤</span>}
+                            {hasMessage && !emailSent && <span style={{fontSize: 10, color: '#A85BC7'}} title="Message IA généré (pas encore envoyé)">✨</span>}
                             {p.email && <span style={{fontSize: 10, color: '#5BC78A'}} title={p.email}>📧</span>}
                             {p.score_qualite && <span style={{fontSize: 11, fontWeight: 800, color: scoreColor(p.score_qualite)}}>{p.score_qualite}/5</span>}
                           </div>
@@ -784,6 +894,7 @@ export default function PageProspects({ project }) {
               const colonneId = statutBaseToColonne(p.statut)
               const col = COLONNES.find(c => c.id === colonneId) || COLONNES[0]
               const hasMessage = !!getStoredMessage(p.id)
+              const emailSent = !!p.email_envoye_le
               return (
                 <div key={p.id}
                   style={{
@@ -801,7 +912,8 @@ export default function PageProspects({ project }) {
                     <span style={{fontSize: 13, fontWeight: 600, color: '#EDE8DB'}}>{p.nom_entreprise}</span>
                     {p.ville && <span style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', marginLeft: 8}}>{p.ville}</span>}
                   </div>
-                  {hasMessage && <span style={{fontSize: 11, color: '#A85BC7', whiteSpace: 'nowrap'}} title="Message IA généré">✨</span>}
+                  {emailSent && <span style={{fontSize: 11, color: '#5BC78A', whiteSpace: 'nowrap'}} title={`Envoyé le ${new Date(p.email_envoye_le).toLocaleDateString('fr-FR')}`}>📤</span>}
+                  {hasMessage && !emailSent && <span style={{fontSize: 11, color: '#A85BC7', whiteSpace: 'nowrap'}} title="Message IA généré (pas encore envoyé)">✨</span>}
                   {p.email && <span style={{fontSize: 11, color: '#5BC78A', whiteSpace: 'nowrap'}} title={p.email}>📧 {p.email.length > 25 ? p.email.substring(0, 25) + '…' : p.email}</span>}
                   <span style={{fontSize: 10, color: col.color, background: `${col.color}15`, padding: '2px 8px', borderRadius: 8, fontWeight: 700, whiteSpace: 'nowrap'}}>
                     {col.emoji} {col.label}
@@ -931,11 +1043,15 @@ export default function PageProspects({ project }) {
             {/* SECTION GÉNÉRATION MESSAGE IA */}
             <div style={{padding: '16px', borderRadius: 12, background: 'rgba(168,91,199,0.08)', border: '1px solid rgba(168,91,199,0.25)', display: 'flex', flexDirection: 'column', gap: 12}}>
               <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8}}>
-                <p style={{fontSize: 12, fontWeight: 700, color: '#A85BC7', margin: 0}}>✨ Message de prospection IA</p>
+                <p style={{fontSize: 12, fontWeight: 700, color: '#A85BC7', margin: 0}}>
+                  {selected.email_envoye_le ? '✅ Email envoyé' : '✨ Message de prospection IA'}
+                </p>
                 {iaMessage && (
                   <span style={{fontSize: 10, color: 'rgba(237,232,219,0.4)'}}>
-                    Généré le {new Date(iaMessage.generated_at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                    {iaMessage.tokens_used && ` · ${iaMessage.tokens_used} tokens`}
+                    {selected.email_envoye_le
+                      ? `Envoyé le ${new Date(selected.email_envoye_le).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+                      : `Généré le ${new Date(iaMessage.generated_at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}${iaMessage.tokens_used ? ` · ${iaMessage.tokens_used} tokens` : ''}`
+                    }
                   </span>
                 )}
               </div>
@@ -947,7 +1063,7 @@ export default function PageProspects({ project }) {
                 </button>
               ) : (
                 <>
-                  {/* Sujet éditable */}
+                  {/* Sujet (éditable si pas encore envoyé, lecture seule sinon) */}
                   <div>
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3}}>
                       <label style={{fontSize: 10, color: 'rgba(237,232,219,0.4)'}}>Sujet</label>
@@ -956,10 +1072,12 @@ export default function PageProspects({ project }) {
                         {iaCopied === 'sujet' ? '✅ Copié' : '📋 Copier'}
                       </button>
                     </div>
-                    <input value={iaMessage.sujet} onChange={e => updateIaField('sujet', e.target.value)} style={iS}/>
+                    <input value={iaMessage.sujet} onChange={e => updateIaField('sujet', e.target.value)}
+                      readOnly={!!selected.email_envoye_le}
+                      style={{...iS, opacity: selected.email_envoye_le ? 0.7 : 1, cursor: selected.email_envoye_le ? 'default' : 'text'}}/>
                   </div>
 
-                  {/* Message éditable */}
+                  {/* Message (éditable si pas encore envoyé, lecture seule sinon) */}
                   <div>
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3}}>
                       <label style={{fontSize: 10, color: 'rgba(237,232,219,0.4)'}}>Corps du message</label>
@@ -969,19 +1087,47 @@ export default function PageProspects({ project }) {
                       </button>
                     </div>
                     <textarea value={iaMessage.message} onChange={e => updateIaField('message', e.target.value)}
-                      rows={8} style={{...iS, resize: 'vertical', fontFamily: "'Nunito Sans',sans-serif", lineHeight: 1.5}}/>
+                      readOnly={!!selected.email_envoye_le}
+                      rows={8} style={{...iS, resize: 'vertical', fontFamily: "'Nunito Sans',sans-serif", lineHeight: 1.5, opacity: selected.email_envoye_le ? 0.7 : 1, cursor: selected.email_envoye_le ? 'default' : 'text'}}/>
                   </div>
 
-                  <div style={{display: 'flex', gap: 8}}>
-                    <button onClick={lancerGenerationIA} disabled={iaGenerating}
-                      style={{flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(168,91,199,0.4)', background: 'rgba(168,91,199,0.1)', color: '#A85BC7', fontSize: 11, fontWeight: 700, cursor: iaGenerating ? 'not-allowed' : 'pointer', opacity: iaGenerating ? 0.6 : 1}}>
-                      {iaGenerating ? '⏳ Régénération...' : '🔄 Régénérer'}
-                    </button>
-                    <button onClick={supprimerMessageIa}
-                      style={{padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(199,91,78,0.3)', background: 'transparent', color: '#C75B4E', fontSize: 11, fontWeight: 700, cursor: 'pointer'}}>
-                      🗑️
-                    </button>
-                  </div>
+                  {/* Boutons d'action */}
+                  {selected.email_envoye_le ? (
+                    /* Email déjà envoyé : badge informatif uniquement */
+                    <div style={{padding: '10px 14px', borderRadius: 8, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.25)', display: 'flex', alignItems: 'center', gap: 8}}>
+                      <span style={{fontSize: 14}}>✅</span>
+                      <span style={{fontSize: 12, color: '#5BC78A', fontWeight: 600}}>
+                        Email envoyé à {selected.email}
+                      </span>
+                    </div>
+                  ) : (
+                    /* Email pas encore envoyé : Régénérer + Envoyer + Supprimer */
+                    <div style={{display: 'flex', flexDirection: 'column', gap: 8}}>
+                      {/* Bouton Envoyer (vert, pleine largeur) — visible seulement si email présent */}
+                      {selected.email && !selected.email_introuvable ? (
+                        <button onClick={lancerEnvoiEmail} disabled={iaSending || iaGenerating}
+                          style={{padding: '12px 14px', borderRadius: 8, border: 'none', background: '#5BC78A', color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: (iaSending || iaGenerating) ? 'not-allowed' : 'pointer', opacity: (iaSending || iaGenerating) ? 0.6 : 1}}>
+                          {iaSending ? '⏳ Envoi en cours...' : `📤 Envoyer à ${selected.email}`}
+                        </button>
+                      ) : (
+                        <div style={{padding: '10px 14px', borderRadius: 8, background: 'rgba(212,168,83,0.1)', border: '1px solid rgba(212,168,83,0.25)', fontSize: 11, color: '#D4A853', textAlign: 'center'}}>
+                          📭 Pas d'email — utilise « 📋 Copier » pour copier-coller manuellement
+                        </div>
+                      )}
+
+                      {/* Régénérer + Supprimer */}
+                      <div style={{display: 'flex', gap: 8}}>
+                        <button onClick={lancerGenerationIA} disabled={iaGenerating || iaSending}
+                          style={{flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(168,91,199,0.4)', background: 'rgba(168,91,199,0.1)', color: '#A85BC7', fontSize: 11, fontWeight: 700, cursor: (iaGenerating || iaSending) ? 'not-allowed' : 'pointer', opacity: (iaGenerating || iaSending) ? 0.6 : 1}}>
+                          {iaGenerating ? '⏳ Régénération...' : '🔄 Régénérer'}
+                        </button>
+                        <button onClick={supprimerMessageIa} disabled={iaSending}
+                          style={{padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(199,91,78,0.3)', background: 'transparent', color: '#C75B4E', fontSize: 11, fontWeight: 700, cursor: iaSending ? 'not-allowed' : 'pointer', opacity: iaSending ? 0.6 : 1}}>
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </div>
