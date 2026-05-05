@@ -404,7 +404,7 @@ export default function App() {
           </button>
           <div style={{display:'flex',alignItems:'center',gap:6}}>
             <div style={{width:8,height:8,borderRadius:'50%',background:'#5BC78A'}}/>
-            <span style={{fontSize:11,color:'rgba(237,232,219,0.3)'}}>v0.9.1</span>
+            <span style={{fontSize:11,color:'rgba(237,232,219,0.3)'}}>v1.0.0</span>
           </div>
         </div>
       </div>
@@ -462,7 +462,23 @@ export default function App() {
         </div>
       </div>
 
-      <style>{`*{box-sizing:border-box;margin:0;padding:0;}body{overflow:hidden;}::-webkit-scrollbar{width:6px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:3px;}button,textarea,input,select{font-family:'Nunito Sans',sans-serif;}`}</style>
+      <style>{`
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{overflow:hidden;}
+  ::-webkit-scrollbar{width:6px;}
+  ::-webkit-scrollbar-track{background:transparent;}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:3px;}
+  button,textarea,input,select{font-family:'Nunito Sans',sans-serif;}
+  select, select option {
+    background-color: #1a1d24 !important;
+    color: #EDE8DB !important;
+  }
+  select {
+    border: 1px solid rgba(255,255,255,0.1) !important;
+    padding: 6px 10px;
+    border-radius: 8px;
+  }
+`}</style>
     </div>
   )
 }
