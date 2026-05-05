@@ -5,6 +5,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 // ============================================
 const API_URL = 'https://pilot-api.vigie-officiel.com'
 const N8N_WEBHOOK_URL = 'https://n8n.vigie-officiel.com/webhook/pilot-prospect'
+const AGENTS_API_URL = 'https://agents.vigie-officiel.com'
 
 // ============================================
 // COLONNES KANBAN
@@ -79,7 +80,7 @@ const DEPARTEMENTS = [
 ]
 
 // ============================================
-// HELPERS API
+// HELPERS API PILOT DB
 // ============================================
 async function apiGet(path) {
   const res = await fetch(`${API_URL}${path}`, {
@@ -116,6 +117,123 @@ async function apiPost(path, body) {
     throw new Error(`API POST ${path} : ${res.status}`)
   }
   return res.json()
+}
+
+// ============================================
+// HELPERS AGENTS DOPPLER (Rédacteur)
+// ============================================
+
+/**
+ * Récupère la clé X-API-Key Agents Doppler depuis le Coffre-fort Pilot.
+ * Cherche un compte dont le nom contient "Agents Doppler" (insensible à la casse).
+ */
+function getAgentsApiKey() {
+  try {
+    const vault = JSON.parse(localStorage.getItem('pilotage_vault') || '[]')
+    const compte = vault.find(c =>
+      c.nom && c.nom.toLowerCase().includes('agents doppler') && c.api_key
+    )
+    return compte?.api_key || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Récupère la config IA d'un projet depuis localStorage.
+ * Si la config n'existe pas, retourne une config minimale par défaut.
+ */
+function getProjectConfig(projectId, projectLabel) {
+  try {
+    const stored = localStorage.getItem(`pilotage_config_${projectId}`)
+    if (stored) {
+      const config = JSON.parse(stored)
+      // Mappe les champs Pilot vers le format attendu par l'agent Rédacteur
+      return {
+        nom: config.nom || projectLabel || projectId,
+        activite: config.activite || 'Logiciel pour entrepreneurs solo',
+        audience: config.audience || 'professionnels',
+        ton: config.ton || 'chaleureux mais professionnel',
+      }
+    }
+  } catch {}
+  // Config par défaut si rien n'est configuré
+  return {
+    nom: projectLabel || projectId,
+    activite: 'Logiciel pour entrepreneurs solo',
+    audience: 'professionnels',
+    ton: 'chaleureux mais professionnel',
+  }
+}
+
+/**
+ * Appelle l'agent Rédacteur sur le VPS pour générer un message de prospection.
+ */
+async function genererMessageIA({ prospectId, projectConfig, allowNoEmail = false }) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) {
+    throw new Error('Clé API Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
+  }
+
+  const res = await fetch(`${AGENTS_API_URL}/redacteur/generer`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey,
+    },
+    body: JSON.stringify({
+      prospect_id: prospectId,
+      project_config: projectConfig,
+      allow_no_email: allowNoEmail,
+    }),
+  })
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const errJson = await res.json()
+      detail = errJson.detail || detail
+    } catch {}
+    throw new Error(detail)
+  }
+
+  return res.json()
+}
+
+// ============================================
+// HELPERS LOCAL STORAGE — Messages générés
+// ============================================
+const MESSAGES_STORAGE_KEY = 'pilot_messages_generes'
+
+function getStoredMessage(prospectId) {
+  try {
+    const all = JSON.parse(localStorage.getItem(MESSAGES_STORAGE_KEY) || '{}')
+    return all[prospectId] || null
+  } catch {
+    return null
+  }
+}
+
+function saveStoredMessage(prospectId, data) {
+  try {
+    const all = JSON.parse(localStorage.getItem(MESSAGES_STORAGE_KEY) || '{}')
+    all[prospectId] = {
+      ...data,
+      generated_at: new Date().toISOString(),
+    }
+    localStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(all))
+    return true
+  } catch {
+    return false
+  }
+}
+
+function deleteStoredMessage(prospectId) {
+  try {
+    const all = JSON.parse(localStorage.getItem(MESSAGES_STORAGE_KEY) || '{}')
+    delete all[prospectId]
+    localStorage.setItem(MESSAGES_STORAGE_KEY, JSON.stringify(all))
+  } catch {}
 }
 
 // ============================================
@@ -163,6 +281,11 @@ export default function PageProspects({ project }) {
   const [enrichData,    setEnrichData]    = useState({ email: '', telephone: '', site_web: '' })
   const [enrichSaving,  setEnrichSaving]  = useState(false)
 
+  // --- États génération message IA ---
+  const [iaMessage,     setIaMessage]     = useState(null)  // { sujet, message, prospect_nom, generated_at, tokens_used }
+  const [iaGenerating,  setIaGenerating]  = useState(false)
+  const [iaCopied,      setIaCopied]      = useState(null)  // 'sujet' | 'message' | null
+
   const csvRef = useRef(null)
 
   const showMsg = (text, duration = 3500) => {
@@ -188,7 +311,7 @@ export default function PageProspects({ project }) {
 
   useEffect(() => { fetchAll() }, [fetchAll])
 
-  // --- Quand un prospect est sélectionné, on initialise les champs enrichissement ---
+  // --- Quand un prospect est sélectionné, on initialise les champs enrichissement + on charge un message éventuellement déjà généré ---
   useEffect(() => {
     if (selected) {
       setEnrichData({
@@ -196,6 +319,12 @@ export default function PageProspects({ project }) {
         telephone: selected.telephone || '',
         site_web: selected.site_web || '',
       })
+      // Charger le message généré stocké en local (s'il existe)
+      const stored = getStoredMessage(selected.id)
+      setIaMessage(stored)
+      setIaCopied(null)
+    } else {
+      setIaMessage(null)
     }
   }, [selected])
 
@@ -243,6 +372,7 @@ export default function PageProspects({ project }) {
 
     setProspects(curr => curr.filter(p => p.id !== id))
     if (selected?.id === id) setSelected(null)
+    deleteStoredMessage(id)  // nettoie aussi le message stocké
 
     try {
       await apiDelete(`/prospects?id=eq.${id}`)
@@ -260,6 +390,7 @@ export default function PageProspects({ project }) {
 
     const ids = Array.from(selection)
     setProspects(curr => curr.filter(p => !selection.has(p.id)))
+    ids.forEach(id => deleteStoredMessage(id))
     setSelection(new Set())
 
     try {
@@ -411,6 +542,78 @@ export default function PageProspects({ project }) {
     setEnrichSaving(false)
   }
 
+  // --- GÉNÉRATION MESSAGE IA ---
+
+  const lancerGenerationIA = async () => {
+    if (!selected) return
+
+    // Vérification clé API présente
+    const apiKey = getAgentsApiKey()
+    if (!apiKey) {
+      showMsg('❌ Clé Agents Doppler introuvable dans le Coffre-fort. Ajoute un compte nommé "Agents Doppler API" avec ta clé.', 6000)
+      return
+    }
+
+    // Détection email manquant
+    const hasEmail = selected.email && !selected.email_introuvable
+    if (!hasEmail) {
+      const ok = confirm(
+        `${selected.nom_entreprise} n'a pas d'email connu.\n\n` +
+        `Générer le message quand même (utile pour copier/coller manuellement ailleurs) ?`
+      )
+      if (!ok) return
+    }
+
+    setIaGenerating(true)
+    setIaCopied(null)
+    try {
+      const config = getProjectConfig(project.id, project.label)
+      const result = await genererMessageIA({
+        prospectId: selected.id,
+        projectConfig: config,
+        allowNoEmail: !hasEmail,
+      })
+
+      const data = {
+        sujet: result.sujet,
+        message: result.message,
+        prospect_nom: result.prospect_nom,
+        tokens_used: result.tokens_used,
+      }
+
+      saveStoredMessage(selected.id, data)
+      setIaMessage({ ...data, generated_at: new Date().toISOString() })
+      showMsg(`✨ Message généré (${result.tokens_used} tokens)`, 3000)
+    } catch (err) {
+      showMsg(`❌ Erreur génération : ${err.message}`, 6000)
+    }
+    setIaGenerating(false)
+  }
+
+  const updateIaField = (field, value) => {
+    setIaMessage(prev => {
+      if (!prev) return prev
+      const updated = { ...prev, [field]: value }
+      // Sauve automatiquement les modifs en local
+      if (selected) saveStoredMessage(selected.id, updated)
+      return updated
+    })
+  }
+
+  const copierTexte = (text, label) => {
+    navigator.clipboard.writeText(text)
+    setIaCopied(label)
+    setTimeout(() => setIaCopied(null), 1500)
+  }
+
+  const supprimerMessageIa = () => {
+    if (!selected) return
+    if (!confirm('Supprimer le message généré ?')) return
+    deleteStoredMessage(selected.id)
+    setIaMessage(null)
+    showMsg('🗑️ Message supprimé', 2000)
+  }
+
   // ============================================
   // RENDU
   // ============================================
@@ -541,25 +744,29 @@ export default function PageProspects({ project }) {
                   <span style={{marginLeft: 'auto', fontSize: 11, color: 'rgba(237,232,219,0.4)'}}>{items.length}</span>
                 </div>
                 <div style={{flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, minHeight: 50}}>
-                  {items.map(p => (
-                    <div key={p.id} draggable onDragStart={(e) => onDragStart(e, p)} onClick={() => setSelected(p)}
-                      style={{
-                        background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
-                        borderRadius: 10, padding: '10px 12px', cursor: 'grab', transition: 'all 0.15s'
-                      }}
-                      onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.07)'}
-                      onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}>
-                      <p style={{fontSize: 12, fontWeight: 700, color: '#EDE8DB', margin: '0 0 3px'}}>{p.nom_entreprise}</p>
-                      {p.ville && <p style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', margin: '0 0 4px'}}>{p.ville}{p.code_postal ? ` (${p.code_postal})` : ''}</p>}
-                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6}}>
-                        <span style={{fontSize: 10, color: 'rgba(237,232,219,0.3)'}}>{p.source || 'manuel'}</span>
-                        <div style={{display: 'flex', gap: 6, alignItems: 'center'}}>
-                          {p.email && <span style={{fontSize: 10, color: '#5BC78A'}} title={p.email}>📧</span>}
-                          {p.score_qualite && <span style={{fontSize: 11, fontWeight: 800, color: scoreColor(p.score_qualite)}}>{p.score_qualite}/5</span>}
+                  {items.map(p => {
+                    const hasMessage = !!getStoredMessage(p.id)
+                    return (
+                      <div key={p.id} draggable onDragStart={(e) => onDragStart(e, p)} onClick={() => setSelected(p)}
+                        style={{
+                          background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+                          borderRadius: 10, padding: '10px 12px', cursor: 'grab', transition: 'all 0.15s'
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.07)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}>
+                        <p style={{fontSize: 12, fontWeight: 700, color: '#EDE8DB', margin: '0 0 3px'}}>{p.nom_entreprise}</p>
+                        {p.ville && <p style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', margin: '0 0 4px'}}>{p.ville}{p.code_postal ? ` (${p.code_postal})` : ''}</p>}
+                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6}}>
+                          <span style={{fontSize: 10, color: 'rgba(237,232,219,0.3)'}}>{p.source || 'manuel'}</span>
+                          <div style={{display: 'flex', gap: 6, alignItems: 'center'}}>
+                            {hasMessage && <span style={{fontSize: 10, color: '#A85BC7'}} title="Message IA généré">✨</span>}
+                            {p.email && <span style={{fontSize: 10, color: '#5BC78A'}} title={p.email}>📧</span>}
+                            {p.score_qualite && <span style={{fontSize: 11, fontWeight: 800, color: scoreColor(p.score_qualite)}}>{p.score_qualite}/5</span>}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                   {items.length === 0 && <div style={{padding: 16, textAlign: 'center', color: 'rgba(237,232,219,0.2)', fontSize: 11, border: '1px dashed rgba(255,255,255,0.06)', borderRadius: 10}}>Vide</div>}
                 </div>
               </div>
@@ -576,6 +783,7 @@ export default function PageProspects({ project }) {
             : prospectsAffiches.map(p => {
               const colonneId = statutBaseToColonne(p.statut)
               const col = COLONNES.find(c => c.id === colonneId) || COLONNES[0]
+              const hasMessage = !!getStoredMessage(p.id)
               return (
                 <div key={p.id}
                   style={{
@@ -593,6 +801,7 @@ export default function PageProspects({ project }) {
                     <span style={{fontSize: 13, fontWeight: 600, color: '#EDE8DB'}}>{p.nom_entreprise}</span>
                     {p.ville && <span style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', marginLeft: 8}}>{p.ville}</span>}
                   </div>
+                  {hasMessage && <span style={{fontSize: 11, color: '#A85BC7', whiteSpace: 'nowrap'}} title="Message IA généré">✨</span>}
                   {p.email && <span style={{fontSize: 11, color: '#5BC78A', whiteSpace: 'nowrap'}} title={p.email}>📧 {p.email.length > 25 ? p.email.substring(0, 25) + '…' : p.email}</span>}
                   <span style={{fontSize: 10, color: col.color, background: `${col.color}15`, padding: '2px 8px', borderRadius: 8, fontWeight: 700, whiteSpace: 'nowrap'}}>
                     {col.emoji} {col.label}
@@ -650,7 +859,7 @@ export default function PageProspects({ project }) {
         <div onClick={() => setSelected(null)}
           style={{position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100, display: 'flex', justifyContent: 'flex-end'}}>
           <div onClick={e => e.stopPropagation()}
-            style={{width: 520, maxWidth: '95%', height: '100%', background: '#0D1B2A', borderLeft: `1px solid ${project.color}30`, padding: 24, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16}}>
+            style={{width: 560, maxWidth: '95%', height: '100%', background: '#0D1B2A', borderLeft: `1px solid ${project.color}30`, padding: 24, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16}}>
 
             {/* Header */}
             <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12}}>
@@ -717,6 +926,64 @@ export default function PageProspects({ project }) {
                 style={{padding: '10px 14px', borderRadius: 8, border: 'none', background: '#5BC78A', color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: enrichSaving ? 'not-allowed' : 'pointer', opacity: enrichSaving ? 0.6 : 1}}>
                 {enrichSaving ? '⏳ Enregistrement...' : '💾 Enregistrer le contact'}
               </button>
+            </div>
+
+            {/* SECTION GÉNÉRATION MESSAGE IA */}
+            <div style={{padding: '16px', borderRadius: 12, background: 'rgba(168,91,199,0.08)', border: '1px solid rgba(168,91,199,0.25)', display: 'flex', flexDirection: 'column', gap: 12}}>
+              <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8}}>
+                <p style={{fontSize: 12, fontWeight: 700, color: '#A85BC7', margin: 0}}>✨ Message de prospection IA</p>
+                {iaMessage && (
+                  <span style={{fontSize: 10, color: 'rgba(237,232,219,0.4)'}}>
+                    Généré le {new Date(iaMessage.generated_at).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                    {iaMessage.tokens_used && ` · ${iaMessage.tokens_used} tokens`}
+                  </span>
+                )}
+              </div>
+
+              {!iaMessage ? (
+                <button onClick={lancerGenerationIA} disabled={iaGenerating}
+                  style={{padding: '12px 14px', borderRadius: 8, border: 'none', background: '#A85BC7', color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: iaGenerating ? 'not-allowed' : 'pointer', opacity: iaGenerating ? 0.6 : 1}}>
+                  {iaGenerating ? '⏳ Génération en cours (jusqu\'à 15s)...' : '✨ Générer un message personnalisé'}
+                </button>
+              ) : (
+                <>
+                  {/* Sujet éditable */}
+                  <div>
+                    <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3}}>
+                      <label style={{fontSize: 10, color: 'rgba(237,232,219,0.4)'}}>Sujet</label>
+                      <button onClick={() => copierTexte(iaMessage.sujet, 'sujet')}
+                        style={{background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, color: iaCopied === 'sujet' ? '#5BC78A' : 'rgba(237,232,219,0.4)', padding: 0}}>
+                        {iaCopied === 'sujet' ? '✅ Copié' : '📋 Copier'}
+                      </button>
+                    </div>
+                    <input value={iaMessage.sujet} onChange={e => updateIaField('sujet', e.target.value)} style={iS}/>
+                  </div>
+
+                  {/* Message éditable */}
+                  <div>
+                    <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3}}>
+                      <label style={{fontSize: 10, color: 'rgba(237,232,219,0.4)'}}>Corps du message</label>
+                      <button onClick={() => copierTexte(iaMessage.message, 'message')}
+                        style={{background: 'none', border: 'none', cursor: 'pointer', fontSize: 10, color: iaCopied === 'message' ? '#5BC78A' : 'rgba(237,232,219,0.4)', padding: 0}}>
+                        {iaCopied === 'message' ? '✅ Copié' : '📋 Copier'}
+                      </button>
+                    </div>
+                    <textarea value={iaMessage.message} onChange={e => updateIaField('message', e.target.value)}
+                      rows={8} style={{...iS, resize: 'vertical', fontFamily: "'Nunito Sans',sans-serif", lineHeight: 1.5}}/>
+                  </div>
+
+                  <div style={{display: 'flex', gap: 8}}>
+                    <button onClick={lancerGenerationIA} disabled={iaGenerating}
+                      style={{flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(168,91,199,0.4)', background: 'rgba(168,91,199,0.1)', color: '#A85BC7', fontSize: 11, fontWeight: 700, cursor: iaGenerating ? 'not-allowed' : 'pointer', opacity: iaGenerating ? 0.6 : 1}}>
+                      {iaGenerating ? '⏳ Régénération...' : '🔄 Régénérer'}
+                    </button>
+                    <button onClick={supprimerMessageIa}
+                      style={{padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(199,91,78,0.3)', background: 'transparent', color: '#C75B4E', fontSize: 11, fontWeight: 700, cursor: 'pointer'}}>
+                      🗑️
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Sources externes */}
