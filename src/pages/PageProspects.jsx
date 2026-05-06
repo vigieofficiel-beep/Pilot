@@ -235,6 +235,102 @@ async function envoyerEmailViaAgent({ prospectId, sujet, message }) {
 }
 
 /**
+ * PHASE 3 — Récupère la liste des prospects éligibles à une relance.
+ */
+async function fetchRelancesEligibles(delayDays = 7) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) {
+    throw new Error('Clé API Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
+  }
+
+  const res = await fetch(`${AGENTS_API_URL}/relance/eligibles?delay_days=${delayDays}`, {
+    method: 'GET',
+    headers: { 'X-API-Key': apiKey },
+  })
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const errJson = await res.json()
+      detail = errJson.detail || detail
+    } catch {}
+    throw new Error(detail)
+  }
+
+  return res.json()
+}
+
+/**
+ * PHASE 3 — Génère un message de relance via l'agent Rédacteur (mode relance).
+ */
+async function genererRelanceIA({ prospectId, projectConfig, emailInitialSujet, emailInitialMessage }) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) {
+    throw new Error('Clé API Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
+  }
+
+  const res = await fetch(`${AGENTS_API_URL}/redacteur/generer-relance`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey,
+    },
+    body: JSON.stringify({
+      prospect_id: prospectId,
+      project_config: projectConfig,
+      email_initial_sujet: emailInitialSujet,
+      email_initial_message: emailInitialMessage,
+    }),
+  })
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const errJson = await res.json()
+      detail = errJson.detail || detail
+    } catch {}
+    throw new Error(detail)
+  }
+
+  return res.json()
+}
+
+/**
+ * PHASE 3 — Envoie un email de RELANCE via l'agent Mailer (is_relance=true).
+ */
+async function envoyerRelanceViaAgent({ prospectId, sujet, message }) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) {
+    throw new Error('Clé API Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
+  }
+
+  const res = await fetch(`${AGENTS_API_URL}/mailer/envoyer`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey,
+    },
+    body: JSON.stringify({
+      prospect_id: prospectId,
+      sujet,
+      message,
+      is_relance: true,
+    }),
+  })
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const errJson = await res.json()
+      detail = errJson.detail || detail
+    } catch {}
+    throw new Error(detail)
+  }
+
+  return res.json()
+}
+
+/**
  * Récupère les events Resend d'un email envoyé depuis Pilot DB.
  * Retourne un tableau d'events triés par created_at ascendant.
  */
@@ -410,6 +506,13 @@ export default function PageProspects({ project }) {
 
   // --- États tracking events Resend (Phase 2B) ---
   const [iaEvents,      setIaEvents]      = useState([])  // [{event_type, created_at}, ...]
+
+  // --- États modal Relances (Phase 3) ---
+  const [relancesModalOpen, setRelancesModalOpen] = useState(false)
+  const [relancesEligibles, setRelancesEligibles] = useState([])  // liste depuis /relance/eligibles
+  const [relancesLoading,   setRelancesLoading]   = useState(false)
+  const [relanceMessages,   setRelanceMessages]   = useState({})  // { prospectId: { sujet, message, generating, sent, error } }
+  const [relanceDelayDays,  setRelanceDelayDays]  = useState(7)
 
   const csvRef = useRef(null)
 
@@ -851,6 +954,158 @@ export default function PageProspects({ project }) {
     }
   }
 
+  // --- MODAL RELANCES (Phase 3) ---
+
+  /**
+   * Ouvre la modal et charge la liste des prospects éligibles.
+   */
+  const ouvrirModalRelances = async () => {
+    setRelancesModalOpen(true)
+    setRelancesLoading(true)
+    setRelanceMessages({})
+    try {
+      const result = await fetchRelancesEligibles(relanceDelayDays)
+      setRelancesEligibles(result.prospects || [])
+      if ((result.prospects || []).length === 0) {
+        showMsg(`ℹ️ Aucun prospect éligible (envoi initial il y a >=${result.delay_days}j)`, 4000)
+      }
+    } catch (err) {
+      showMsg(`❌ Erreur récupération éligibles : ${err.message}`, 5000)
+      setRelancesEligibles([])
+    }
+    setRelancesLoading(false)
+  }
+
+  const fermerModalRelances = () => {
+    setRelancesModalOpen(false)
+    // On garde les messages générés en mémoire au cas où l'utilisateur réouvre
+  }
+
+  const rechargerEligibles = async () => {
+    setRelancesLoading(true)
+    try {
+      const result = await fetchRelancesEligibles(relanceDelayDays)
+      setRelancesEligibles(result.prospects || [])
+    } catch (err) {
+      showMsg(`❌ Erreur : ${err.message}`, 4000)
+    }
+    setRelancesLoading(false)
+  }
+
+  /**
+   * Génère le message de relance pour un prospect (appelle l'IA).
+   */
+  const genererRelancePourProspect = async (prospect) => {
+    setRelanceMessages(prev => ({
+      ...prev,
+      [prospect.id]: { ...(prev[prospect.id] || {}), generating: true, error: null }
+    }))
+
+    try {
+      const projectConfig = getProjectConfig()
+      const result = await genererRelanceIA({
+        prospectId: prospect.id,
+        projectConfig,
+        emailInitialSujet: prospect.email_sujet,
+        emailInitialMessage: prospect.email_message || '',
+      })
+      setRelanceMessages(prev => ({
+        ...prev,
+        [prospect.id]: {
+          sujet: result.sujet,
+          message: result.message,
+          tokens: result.tokens_used,
+          generating: false,
+          sent: false,
+          error: null,
+        }
+      }))
+    } catch (err) {
+      setRelanceMessages(prev => ({
+        ...prev,
+        [prospect.id]: { ...(prev[prospect.id] || {}), generating: false, error: err.message }
+      }))
+      showMsg(`❌ Erreur génération relance : ${err.message}`, 4000)
+    }
+  }
+
+  /**
+   * Envoie la relance pour un prospect (avec confirmation).
+   */
+  const envoyerRelancePourProspect = async (prospect) => {
+    const msg = relanceMessages[prospect.id]
+    if (!msg || !msg.sujet || !msg.message) {
+      showMsg('❌ Génère d\'abord le message de relance', 3000)
+      return
+    }
+    if (msg.sent) {
+      showMsg('⚠️ Cette relance a déjà été envoyée', 3000)
+      return
+    }
+
+    const ok = confirm(
+      `Envoyer cette relance à ${prospect.nom_entreprise} ?\n\n` +
+      `Destinataire : ${prospect.email}\n` +
+      `Sujet : ${msg.sujet}\n\n` +
+      `L'envoi est définitif.`
+    )
+    if (!ok) return
+
+    setRelanceMessages(prev => ({
+      ...prev,
+      [prospect.id]: { ...prev[prospect.id], sending: true }
+    }))
+
+    try {
+      const result = await envoyerRelanceViaAgent({
+        prospectId: prospect.id,
+        sujet: msg.sujet,
+        message: msg.message,
+      })
+
+      // Mark comme envoyé localement
+      setRelanceMessages(prev => ({
+        ...prev,
+        [prospect.id]: { ...prev[prospect.id], sending: false, sent: true, sentAt: result.envoye_le }
+      }))
+
+      // Update du prospect dans la liste principale
+      const updates = {
+        relance_envoyee_le: result.envoye_le,
+        relance_resend_id: result.resend_id,
+        relance_sujet: msg.sujet,
+        relance_message: msg.message,
+      }
+      setProspects(curr => curr.map(p => p.id === prospect.id ? { ...p, ...updates } : p))
+
+      showMsg(`✅ Relance envoyée à ${prospect.nom_entreprise}`, 4000)
+    } catch (err) {
+      setRelanceMessages(prev => ({
+        ...prev,
+        [prospect.id]: { ...prev[prospect.id], sending: false, error: err.message }
+      }))
+      showMsg(`❌ Erreur envoi relance : ${err.message}`, 5000)
+    }
+  }
+
+  /**
+   * Met à jour le sujet ou message éditable de la relance d'un prospect.
+   */
+  const updateRelanceField = (prospectId, field, value) => {
+    setRelanceMessages(prev => ({
+      ...prev,
+      [prospectId]: { ...(prev[prospectId] || {}), [field]: value }
+    }))
+  }
+
+  /**
+   * Skip un prospect (le retire de la liste affichée pour cette session).
+   */
+  const skipProspect = (prospectId) => {
+    setRelancesEligibles(curr => curr.filter(p => p.id !== prospectId))
+    showMsg('⏭️ Prospect ignoré pour cette session', 2000)
+  }
+
   // ============================================
   // RENDU
   // ============================================
@@ -891,6 +1146,11 @@ export default function PageProspects({ project }) {
         </div>
 
         <div style={{display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginLeft: 'auto'}}>
+          {/* Bouton Lancer les relances (Phase 3) */}
+          <button onClick={ouvrirModalRelances}
+            style={{padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(168,91,199,0.4)', background: 'rgba(168,91,199,0.08)', color: '#A85BC7', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap'}}>
+            📬 Lancer les relances du jour
+          </button>
           {filterSession && (
             <button onClick={() => setFilterSession(null)}
               style={{padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(212,168,83,0.4)', background: 'rgba(212,168,83,0.08)', color: '#D4A853', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap'}}>
@@ -1352,6 +1612,176 @@ export default function PageProspects({ project }) {
                 🗑️ Supprimer
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL RELANCES (Phase 3) */}
+      {relancesModalOpen && (
+        <div onClick={fermerModalRelances}
+          style={{position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24}}>
+          <div onClick={e => e.stopPropagation()}
+            style={{background: '#0D1B2A', border: '1px solid rgba(168,91,199,0.3)', borderRadius: 16, width: '100%', maxWidth: 1100, maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden'}}>
+
+            {/* Header de la modal */}
+            <div style={{padding: '20px 24px', borderBottom: '1px solid rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0}}>
+              <div>
+                <h2 style={{fontSize: 18, fontWeight: 800, color: '#A85BC7', margin: 0, fontFamily: 'Georgia, serif'}}>📬 Relances du jour</h2>
+                <p style={{fontSize: 12, color: 'rgba(237,232,219,0.5)', margin: '4px 0 0'}}>
+                  Prospects contactés il y a ≥ {relanceDelayDays}j sans réponse
+                </p>
+              </div>
+              <div style={{display: 'flex', gap: 10, alignItems: 'center'}}>
+                <label style={{fontSize: 11, color: 'rgba(237,232,219,0.6)'}}>Délai (jours)</label>
+                <input type="number" min={0} max={90} value={relanceDelayDays}
+                  onChange={e => setRelanceDelayDays(Math.max(0, Math.min(90, parseInt(e.target.value) || 0)))}
+                  style={{width: 60, padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', color: '#EDE8DB', fontSize: 12, fontFamily: "'Nunito Sans', sans-serif"}}/>
+                <button onClick={rechargerEligibles} disabled={relancesLoading}
+                  style={{padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(168,91,199,0.4)', background: 'rgba(168,91,199,0.1)', color: '#A85BC7', fontSize: 11, fontWeight: 700, cursor: relancesLoading ? 'not-allowed' : 'pointer', opacity: relancesLoading ? 0.5 : 1}}>
+                  🔄 Recharger
+                </button>
+                <button onClick={fermerModalRelances}
+                  style={{padding: '6px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.6)', fontSize: 14, fontWeight: 700, cursor: 'pointer'}}>
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Body scrollable */}
+            <div style={{flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 16}}>
+              {relancesLoading ? (
+                <div style={{textAlign: 'center', color: 'rgba(237,232,219,0.5)', padding: 40}}>
+                  ⏳ Chargement des prospects éligibles...
+                </div>
+              ) : relancesEligibles.length === 0 ? (
+                <div style={{textAlign: 'center', color: 'rgba(237,232,219,0.5)', padding: 40, display: 'flex', flexDirection: 'column', gap: 12}}>
+                  <p style={{fontSize: 32, margin: 0}}>📭</p>
+                  <p style={{fontSize: 14, margin: 0}}>Aucun prospect à relancer pour le moment.</p>
+                  <p style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', margin: 0}}>
+                    Les prospects deviennent éligibles après {relanceDelayDays} jour{relanceDelayDays > 1 ? 's' : ''} sans réponse.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div style={{fontSize: 12, color: 'rgba(237,232,219,0.5)', textAlign: 'center'}}>
+                    {relancesEligibles.length} prospect{relancesEligibles.length > 1 ? 's' : ''} à relancer
+                  </div>
+
+                  {relancesEligibles.map(p => {
+                    const msg = relanceMessages[p.id] || {}
+                    const hasMessage = !!msg.sujet
+                    const isGenerating = !!msg.generating
+                    const isSending = !!msg.sending
+                    const isSent = !!msg.sent
+
+                    return (
+                      <div key={p.id} style={{
+                        background: isSent ? 'rgba(91,199,138,0.05)' : 'rgba(255,255,255,0.03)',
+                        border: `1px solid ${isSent ? 'rgba(91,199,138,0.3)' : 'rgba(168,91,199,0.2)'}`,
+                        borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10,
+                      }}>
+                        {/* Header card : nom + métadonnées + skip */}
+                        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12}}>
+                          <div style={{flex: 1, minWidth: 0}}>
+                            <p style={{fontSize: 14, fontWeight: 700, color: '#EDE8DB', margin: '0 0 4px'}}>{p.nom_entreprise}</p>
+                            <div style={{display: 'flex', gap: 12, fontSize: 11, color: 'rgba(237,232,219,0.5)', flexWrap: 'wrap'}}>
+                              {p.ville && <span>📍 {p.ville}{p.code_postal ? ` (${p.code_postal})` : ''}</span>}
+                              <span>📧 {p.email}</span>
+                              <span>📤 Envoyé il y a {p.days_since_send} jour{p.days_since_send > 1 ? 's' : ''}</span>
+                              {p.score_qualite && <span style={{color: scoreColor(p.score_qualite)}}>★ {p.score_qualite}/5</span>}
+                            </div>
+                          </div>
+                          {!isSent && (
+                            <button onClick={() => skipProspect(p.id)} title="Ignorer ce prospect pour cette session"
+                              style={{padding: '4px 10px', borderRadius: 6, border: '1px solid rgba(237,232,219,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.5)', fontSize: 10, cursor: 'pointer', whiteSpace: 'nowrap'}}>
+                              ⏭️ Skip
+                            </button>
+                          )}
+                        </div>
+
+                        {/* 1er email envoyé : sujet seulement (replié) */}
+                        <details style={{fontSize: 11}}>
+                          <summary style={{color: 'rgba(237,232,219,0.45)', cursor: 'pointer', userSelect: 'none', padding: '4px 0'}}>
+                            📜 1er email envoyé : "{p.email_sujet}" — voir contenu
+                          </summary>
+                          <div style={{marginTop: 6, padding: '8px 12px', background: 'rgba(255,255,255,0.02)', borderRadius: 6, color: 'rgba(237,232,219,0.6)', whiteSpace: 'pre-wrap', lineHeight: 1.5, fontSize: 11}}>
+                            {p.email_message || '(Message non sauvegardé en base)'}
+                          </div>
+                        </details>
+
+                        {/* Zone de génération / édition relance */}
+                        {!hasMessage && !isGenerating ? (
+                          <button onClick={() => genererRelancePourProspect(p)}
+                            style={{padding: '10px 14px', borderRadius: 8, border: 'none', background: '#A85BC7', color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: 'pointer', alignSelf: 'flex-start'}}>
+                            ✨ Générer la relance IA
+                          </button>
+                        ) : isGenerating ? (
+                          <div style={{padding: '10px 14px', fontSize: 12, color: 'rgba(168,91,199,0.8)', fontStyle: 'italic'}}>
+                            ⏳ Génération en cours (jusqu'à 15s)...
+                          </div>
+                        ) : (
+                          <div style={{display: 'flex', flexDirection: 'column', gap: 8, padding: 12, background: 'rgba(168,91,199,0.05)', borderRadius: 8, border: '1px solid rgba(168,91,199,0.15)'}}>
+                            <div>
+                              <label style={{fontSize: 10, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 3}}>Sujet relance</label>
+                              <input value={msg.sujet} onChange={e => updateRelanceField(p.id, 'sujet', e.target.value)}
+                                readOnly={isSent}
+                                style={{width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: isSent ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.04)', color: '#EDE8DB', fontSize: 12, fontFamily: "'Nunito Sans', sans-serif", opacity: isSent ? 0.7 : 1}}/>
+                            </div>
+                            <div>
+                              <label style={{fontSize: 10, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 3}}>Message relance</label>
+                              <textarea value={msg.message} onChange={e => updateRelanceField(p.id, 'message', e.target.value)}
+                                readOnly={isSent} rows={5}
+                                style={{width: '100%', padding: '6px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: isSent ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.04)', color: '#EDE8DB', fontSize: 12, fontFamily: "'Nunito Sans', sans-serif", lineHeight: 1.5, resize: 'vertical', opacity: isSent ? 0.7 : 1}}/>
+                            </div>
+                            {msg.tokens && (
+                              <div style={{fontSize: 10, color: 'rgba(237,232,219,0.35)', textAlign: 'right'}}>
+                                {msg.tokens} tokens
+                              </div>
+                            )}
+
+                            {/* Boutons d'action */}
+                            {isSent ? (
+                              <div style={{padding: '8px 12px', borderRadius: 6, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.25)', fontSize: 11, color: '#5BC78A', fontWeight: 600}}>
+                                ✅ Relance envoyée à {p.email}
+                              </div>
+                            ) : (
+                              <div style={{display: 'flex', gap: 8}}>
+                                <button onClick={() => envoyerRelancePourProspect(p)} disabled={isSending}
+                                  style={{flex: 1, padding: '10px 14px', borderRadius: 6, border: 'none', background: '#5BC78A', color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: isSending ? 'not-allowed' : 'pointer', opacity: isSending ? 0.6 : 1}}>
+                                  {isSending ? '⏳ Envoi...' : `📤 Envoyer la relance à ${p.email}`}
+                                </button>
+                                <button onClick={() => genererRelancePourProspect(p)} disabled={isSending}
+                                  style={{padding: '10px 14px', borderRadius: 6, border: '1px solid rgba(168,91,199,0.4)', background: 'rgba(168,91,199,0.1)', color: '#A85BC7', fontSize: 11, fontWeight: 700, cursor: isSending ? 'not-allowed' : 'pointer', opacity: isSending ? 0.6 : 1, whiteSpace: 'nowrap'}}>
+                                  🔄 Régénérer
+                                </button>
+                              </div>
+                            )}
+
+                            {msg.error && (
+                              <div style={{fontSize: 10, color: '#C75B4E', padding: '4px 0'}}>
+                                ❌ {msg.error}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div style={{padding: '14px 24px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0, fontSize: 11, color: 'rgba(237,232,219,0.5)'}}>
+              <span>
+                {Object.values(relanceMessages).filter(m => m.sent).length} envoyée(s) sur cette session
+              </span>
+              <button onClick={fermerModalRelances}
+                style={{padding: '8px 16px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.7)', fontSize: 12, fontWeight: 700, cursor: 'pointer'}}>
+                Fermer
+              </button>
+            </div>
+
           </div>
         </div>
       )}
