@@ -234,6 +234,91 @@ async function envoyerEmailViaAgent({ prospectId, sujet, message }) {
   return res.json()
 }
 
+/**
+ * Récupère les events Resend d'un email envoyé depuis Pilot DB.
+ * Retourne un tableau d'events triés par created_at ascendant.
+ */
+async function fetchEmailEvents(resendId) {
+  if (!resendId) return []
+  try {
+    const res = await fetch(
+      `${API_URL}/email_events?resend_id=eq.${resendId}&select=event_type,created_at&order=created_at.asc`,
+      { headers: { 'Accept': 'application/json' } }
+    )
+    if (!res.ok) return []
+    return res.json()
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Construit un résumé des events tracking : compteurs + dernière interaction significative.
+ * Retourne null si aucun event utile.
+ */
+function summarizeEmailEvents(events) {
+  if (!events || events.length === 0) return null
+
+  const summary = {
+    delivered: false,
+    deliveredAt: null,
+    bounced: false,
+    bouncedAt: null,
+    opens: 0,
+    lastOpenAt: null,
+    clicks: 0,
+    lastClickAt: null,
+    complained: false,
+  }
+
+  for (const ev of events) {
+    switch (ev.event_type) {
+      case 'email.delivered':
+        summary.delivered = true
+        summary.deliveredAt = ev.created_at
+        break
+      case 'email.bounced':
+        summary.bounced = true
+        summary.bouncedAt = ev.created_at
+        break
+      case 'email.opened':
+        summary.opens += 1
+        summary.lastOpenAt = ev.created_at
+        break
+      case 'email.clicked':
+        summary.clicks += 1
+        summary.lastClickAt = ev.created_at
+        break
+      case 'email.complained':
+        summary.complained = true
+        break
+      default:
+        break
+    }
+  }
+
+  return summary
+}
+
+/**
+ * Formatage temps relatif court ("il y a 5 min", "il y a 2h", "hier")
+ */
+function timeAgo(isoDate) {
+  if (!isoDate) return ''
+  const now = new Date()
+  const then = new Date(isoDate)
+  const diffSec = Math.floor((now - then) / 1000)
+  if (diffSec < 60) return 'à l\'instant'
+  const diffMin = Math.floor(diffSec / 60)
+  if (diffMin < 60) return `il y a ${diffMin} min`
+  const diffH = Math.floor(diffMin / 60)
+  if (diffH < 24) return `il y a ${diffH}h`
+  const diffD = Math.floor(diffH / 24)
+  if (diffD === 1) return 'hier'
+  if (diffD < 7) return `il y a ${diffD}j`
+  return then.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })
+}
+
 // ============================================
 // HELPERS LOCAL STORAGE — Messages générés
 // ============================================
@@ -323,6 +408,9 @@ export default function PageProspects({ project }) {
   // --- États envoi email IA ---
   const [iaSending,     setIaSending]     = useState(false)
 
+  // --- États tracking events Resend (Phase 2B) ---
+  const [iaEvents,      setIaEvents]      = useState([])  // [{event_type, created_at}, ...]
+
   const csvRef = useRef(null)
 
   const showMsg = (text, duration = 3500) => {
@@ -370,8 +458,16 @@ export default function PageProspects({ project }) {
         setIaMessage(stored)
       }
       setIaCopied(null)
+
+      // Charger les events Resend (tracking) si email envoyé
+      if (selected.email_resend_id) {
+        fetchEmailEvents(selected.email_resend_id).then(setIaEvents)
+      } else {
+        setIaEvents([])
+      }
     } else {
       setIaMessage(null)
+      setIaEvents([])
     }
   }, [selected])
 
@@ -1093,12 +1189,59 @@ export default function PageProspects({ project }) {
 
                   {/* Boutons d'action */}
                   {selected.email_envoye_le ? (
-                    /* Email déjà envoyé : badge informatif uniquement */
-                    <div style={{padding: '10px 14px', borderRadius: 8, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.25)', display: 'flex', alignItems: 'center', gap: 8}}>
-                      <span style={{fontSize: 14}}>✅</span>
-                      <span style={{fontSize: 12, color: '#5BC78A', fontWeight: 600}}>
-                        Email envoyé à {selected.email}
-                      </span>
+                    /* Email déjà envoyé : badge informatif + stats tracking */
+                    <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
+                      <div style={{padding: '10px 14px', borderRadius: 8, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.25)', display: 'flex', alignItems: 'center', gap: 8}}>
+                        <span style={{fontSize: 14}}>✅</span>
+                        <span style={{fontSize: 12, color: '#5BC78A', fontWeight: 600}}>
+                          Email envoyé à {selected.email}
+                        </span>
+                      </div>
+
+                      {/* Résumé tracking Resend */}
+                      {(() => {
+                        const summary = summarizeEmailEvents(iaEvents)
+                        if (!summary) {
+                          return (
+                            <div style={{padding: '8px 14px', fontSize: 11, color: 'rgba(237,232,219,0.4)', fontStyle: 'italic'}}>
+                              ⏳ En attente du suivi de livraison...
+                            </div>
+                          )
+                        }
+                        // Cas bounce ou plainte spam
+                        if (summary.bounced || summary.complained) {
+                          return (
+                            <div style={{padding: '8px 14px', borderRadius: 8, background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.25)', fontSize: 11, color: '#C75B4E', display: 'flex', alignItems: 'center', gap: 6}}>
+                              <span>{summary.complained ? '⚠️' : '↩️'}</span>
+                              <span style={{fontWeight: 600}}>
+                                {summary.complained
+                                  ? 'Email signalé comme spam par le destinataire'
+                                  : `Email rejeté ${summary.bouncedAt ? timeAgo(summary.bouncedAt) : ''}`}
+                              </span>
+                            </div>
+                          )
+                        }
+                        // Cas normal : delivered + opens + clicks
+                        const parts = []
+                        if (summary.delivered) parts.push('📬 Délivré')
+                        if (summary.opens > 0) {
+                          parts.push(`👀 Ouvert ${summary.opens} fois`)
+                        } else if (summary.delivered) {
+                          parts.push('👀 Pas encore ouvert')
+                        }
+                        if (summary.clicks > 0) parts.push(`🖱️ Cliqué ${summary.clicks} fois`)
+                        const lastActivity = summary.lastClickAt || summary.lastOpenAt || summary.deliveredAt
+                        return (
+                          <div style={{padding: '8px 14px', borderRadius: 8, background: 'rgba(91,168,199,0.08)', border: '1px solid rgba(91,168,199,0.2)', fontSize: 11, color: '#9CC8DD', display: 'flex', flexDirection: 'column', gap: 3}}>
+                            <span style={{fontWeight: 600}}>{parts.join(' · ')}</span>
+                            {lastActivity && (
+                              <span style={{fontSize: 10, color: 'rgba(237,232,219,0.4)'}}>
+                                Dernière activité : {timeAgo(lastActivity)}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })()}
                     </div>
                   ) : (
                     /* Email pas encore envoyé : Régénérer + Envoyer + Supprimer */
