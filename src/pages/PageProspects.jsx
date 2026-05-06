@@ -818,6 +818,39 @@ export default function PageProspects({ project }) {
     setIaSending(false)
   }
 
+  // --- MARQUER COMME AYANT RÉPONDU (Phase 3) ---
+
+  const marquerCommeRepondu = async () => {
+    if (!selected) return
+    if (selected.a_repondu) {
+      // Toggle inverse : démarquer
+      if (!confirm('Démarquer ce prospect comme ayant répondu ?')) return
+    }
+
+    const nouveauEtat = !selected.a_repondu
+    const updates = nouveauEtat
+      ? { a_repondu: true, repondu_le: new Date().toISOString() }
+      : { a_repondu: false, repondu_le: null }
+
+    try {
+      const res = await fetch(`${API_URL}/prospects?id=eq.${selected.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal',
+        },
+        body: JSON.stringify(updates),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+      setProspects(curr => curr.map(p => p.id === selected.id ? { ...p, ...updates } : p))
+      setSelected(prev => ({ ...prev, ...updates }))
+      showMsg(nouveauEtat ? '✅ Prospect marqué comme ayant répondu' : '↩️ Démarquage effectué', 3000)
+    } catch (err) {
+      showMsg(`❌ Erreur : ${err.message}`, 4000)
+    }
+  }
+
   // ============================================
   // RENDU
   // ============================================
@@ -951,19 +984,22 @@ export default function PageProspects({ project }) {
                   {items.map(p => {
                     const hasMessage = !!getStoredMessage(p.id)
                     const emailSent = !!p.email_envoye_le
+                    const aRepondu = !!p.a_repondu
                     return (
                       <div key={p.id} draggable onDragStart={(e) => onDragStart(e, p)} onClick={() => setSelected(p)}
                         style={{
-                          background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)',
+                          background: aRepondu ? 'rgba(168,91,199,0.06)' : 'rgba(255,255,255,0.04)',
+                          border: aRepondu ? '1px solid rgba(168,91,199,0.25)' : '1px solid rgba(255,255,255,0.08)',
                           borderRadius: 10, padding: '10px 12px', cursor: 'grab', transition: 'all 0.15s'
                         }}
-                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.07)'}
-                        onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.04)'}>
+                        onMouseEnter={e => e.currentTarget.style.background = aRepondu ? 'rgba(168,91,199,0.1)' : 'rgba(255,255,255,0.07)'}
+                        onMouseLeave={e => e.currentTarget.style.background = aRepondu ? 'rgba(168,91,199,0.06)' : 'rgba(255,255,255,0.04)'}>
                         <p style={{fontSize: 12, fontWeight: 700, color: '#EDE8DB', margin: '0 0 3px'}}>{p.nom_entreprise}</p>
                         {p.ville && <p style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', margin: '0 0 4px'}}>{p.ville}{p.code_postal ? ` (${p.code_postal})` : ''}</p>}
                         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6}}>
                           <span style={{fontSize: 10, color: 'rgba(237,232,219,0.3)'}}>{p.source || 'manuel'}</span>
                           <div style={{display: 'flex', gap: 6, alignItems: 'center'}}>
+                            {aRepondu && <span style={{fontSize: 10, color: '#C39BD3'}} title={`A répondu${p.repondu_le ? ` ${timeAgo(p.repondu_le)}` : ''}`}>💬</span>}
                             {emailSent && <span style={{fontSize: 10, color: '#5BC78A'}} title={`Email envoyé le ${new Date(p.email_envoye_le).toLocaleDateString('fr-FR')}`}>📤</span>}
                             {hasMessage && !emailSent && <span style={{fontSize: 10, color: '#A85BC7'}} title="Message IA généré (pas encore envoyé)">✨</span>}
                             {p.email && <span style={{fontSize: 10, color: '#5BC78A'}} title={p.email}>📧</span>}
@@ -991,12 +1027,13 @@ export default function PageProspects({ project }) {
               const col = COLONNES.find(c => c.id === colonneId) || COLONNES[0]
               const hasMessage = !!getStoredMessage(p.id)
               const emailSent = !!p.email_envoye_le
+              const aRepondu = !!p.a_repondu
               return (
                 <div key={p.id}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px',
-                    background: selection.has(p.id) ? 'rgba(199,91,78,0.06)' : 'rgba(255,255,255,0.03)',
-                    border: `1px solid ${selection.has(p.id) ? 'rgba(199,91,78,0.2)' : 'rgba(255,255,255,0.06)'}`,
+                    background: selection.has(p.id) ? 'rgba(199,91,78,0.06)' : (aRepondu ? 'rgba(168,91,199,0.05)' : 'rgba(255,255,255,0.03)'),
+                    border: `1px solid ${selection.has(p.id) ? 'rgba(199,91,78,0.2)' : (aRepondu ? 'rgba(168,91,199,0.2)' : 'rgba(255,255,255,0.06)')}`,
                     borderRadius: 10, cursor: 'pointer'
                   }}
                   onClick={() => setSelected(p)}>
@@ -1008,6 +1045,7 @@ export default function PageProspects({ project }) {
                     <span style={{fontSize: 13, fontWeight: 600, color: '#EDE8DB'}}>{p.nom_entreprise}</span>
                     {p.ville && <span style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', marginLeft: 8}}>{p.ville}</span>}
                   </div>
+                  {aRepondu && <span style={{fontSize: 11, color: '#C39BD3', whiteSpace: 'nowrap'}} title={`A répondu${p.repondu_le ? ` ${timeAgo(p.repondu_le)}` : ''}`}>💬</span>}
                   {emailSent && <span style={{fontSize: 11, color: '#5BC78A', whiteSpace: 'nowrap'}} title={`Envoyé le ${new Date(p.email_envoye_le).toLocaleDateString('fr-FR')}`}>📤</span>}
                   {hasMessage && !emailSent && <span style={{fontSize: 11, color: '#A85BC7', whiteSpace: 'nowrap'}} title="Message IA généré (pas encore envoyé)">✨</span>}
                   {p.email && <span style={{fontSize: 11, color: '#5BC78A', whiteSpace: 'nowrap'}} title={p.email}>📧 {p.email.length > 25 ? p.email.substring(0, 25) + '…' : p.email}</span>}
@@ -1242,6 +1280,22 @@ export default function PageProspects({ project }) {
                           </div>
                         )
                       })()}
+
+                      {/* Bouton A répondu / badge si déjà marqué (Phase 3) */}
+                      {selected.a_repondu ? (
+                        <div onClick={marquerCommeRepondu} title="Cliquer pour démarquer"
+                          style={{padding: '8px 14px', borderRadius: 8, background: 'rgba(168,91,199,0.1)', border: '1px solid rgba(168,91,199,0.3)', fontSize: 11, color: '#C39BD3', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer'}}>
+                          <span>💬</span>
+                          <span style={{fontWeight: 600}}>
+                            A répondu{selected.repondu_le ? ` (${timeAgo(selected.repondu_le)})` : ''}
+                          </span>
+                        </div>
+                      ) : (
+                        <button onClick={marquerCommeRepondu}
+                          style={{padding: '8px 14px', borderRadius: 8, border: '1px solid rgba(168,91,199,0.3)', background: 'transparent', color: '#A85BC7', fontSize: 11, fontWeight: 600, cursor: 'pointer'}}>
+                          💬 Marquer comme ayant répondu
+                        </button>
+                      )}
                     </div>
                   ) : (
                     /* Email pas encore envoyé : Régénérer + Envoyer + Supprimer */
