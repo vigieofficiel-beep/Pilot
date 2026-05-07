@@ -33,6 +33,28 @@ const FORMATS_IMG = [
   { val: '4:5',  label: 'Insta',      emoji: '📸', dims: '896×1120',  ratio: 4/5 },
 ]
 
+const STYLES_VIDEO = [
+  { val: 'documentaire', label: 'Documentaire',  emoji: '📚' },
+  { val: 'cinema',       label: 'Cinématique',    emoji: '🎞️' },
+  { val: 'vlog',         label: 'Vlog',           emoji: '📹' },
+  { val: 'investigation', label: 'Investigation', emoji: '🔍' },
+]
+
+const STYLES_SHORT = [
+  { val: 'demo',     label: 'Démo écran',         emoji: '🖥️' },
+  { val: 'anime',    label: 'Animé',              emoji: '✨' },
+  { val: 'slides',   label: 'Voix-off + slides',  emoji: '🎯' },
+  { val: 'texte',    label: 'Texte animé',        emoji: '🔤' },
+]
+
+const PHASES_VIDEO = [
+  { id: 'script',  label: 'Génération du script', emoji: '✍️',  duration: 1500 },
+  { id: 'voice',   label: 'Synthèse de la voix-off', emoji: '🎙️', duration: 2000 },
+  { id: 'visuals', label: 'Création des visuels', emoji: '🎨',  duration: 2500 },
+  { id: 'edit',    label: 'Assemblage et montage', emoji: '✂️',  duration: 1800 },
+  { id: 'render',  label: 'Finalisation',          emoji: '🎬',  duration: 1200 },
+]
+
 const iS = {
   width: '100%', padding: '10px 14px', borderRadius: 8,
   background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
@@ -41,31 +63,23 @@ const iS = {
 }
 
 function fmtTime(sec) {
+  if (!sec || isNaN(sec)) return '0:00'
   const m = Math.floor(sec / 60)
   const s = Math.floor(sec % 60)
   return `${m}:${s.toString().padStart(2, '0')}`
 }
 
-// Génère un WAV silencieux de N secondes (mock pour l'audio généré)
 function generateSilentWav(durationSec) {
   const sampleRate = 22050
   const numSamples = Math.floor(sampleRate * durationSec)
   const buffer = new ArrayBuffer(44 + numSamples * 2)
   const view = new DataView(buffer)
   const writeStr = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)) }
-  writeStr(0, 'RIFF')
-  view.setUint32(4, 36 + numSamples * 2, true)
-  writeStr(8, 'WAVE')
-  writeStr(12, 'fmt ')
-  view.setUint32(16, 16, true)
-  view.setUint16(20, 1, true)
-  view.setUint16(22, 1, true)
-  view.setUint32(24, sampleRate, true)
-  view.setUint32(28, sampleRate * 2, true)
-  view.setUint16(32, 2, true)
-  view.setUint16(34, 16, true)
-  writeStr(36, 'data')
-  view.setUint32(40, numSamples * 2, true)
+  writeStr(0, 'RIFF'); view.setUint32(4, 36 + numSamples * 2, true); writeStr(8, 'WAVE')
+  writeStr(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true)
+  view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true)
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true)
+  writeStr(36, 'data'); view.setUint32(40, numSamples * 2, true)
   const blob = new Blob([buffer], { type: 'audio/wav' })
   return new Promise(resolve => {
     const reader = new FileReader()
@@ -74,64 +88,122 @@ function generateSilentWav(durationSec) {
   })
 }
 
-// Génère un SVG mocké pour image (gradient stylisé + emoji)
 function generateMockImageSvg(style, format, prompt, seed) {
   const fmt = FORMATS_IMG.find(f => f.val === format) || FORMATS_IMG[0]
   const sty = STYLES_IMG.find(s => s.val === style) || STYLES_IMG[0]
   const w = 600
   const h = Math.round(w / fmt.ratio)
-
-  // Pseudo-random basé sur seed pour cohérence visuelle
   const rng = (n) => ((seed * 9301 + n * 49297) % 233280) / 233280
   const c1 = sty.palette[Math.floor(rng(1) * sty.palette.length)]
   const c2 = sty.palette[Math.floor(rng(2) * sty.palette.length)]
   const c3 = sty.palette[Math.floor(rng(3) * sty.palette.length)]
   const angle = Math.floor(rng(4) * 360)
-
-  // Quelques formes géométriques aléatoires
   const shapes = []
   for (let i = 0; i < 5; i++) {
-    const cx = rng(10 + i) * w
-    const cy = rng(20 + i) * h
-    const r = 30 + rng(30 + i) * 80
-    const opacity = 0.15 + rng(40 + i) * 0.25
+    const cx = rng(10 + i) * w; const cy = rng(20 + i) * h
+    const r = 30 + rng(30 + i) * 80; const opacity = 0.15 + rng(40 + i) * 0.25
     const fill = sty.palette[Math.floor(rng(50 + i) * sty.palette.length)]
     shapes.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}" opacity="${opacity}"/>`)
   }
-
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">
-    <defs>
-      <linearGradient id="g${seed}" gradientTransform="rotate(${angle})">
-        <stop offset="0%" stop-color="${c1}"/>
-        <stop offset="50%" stop-color="${c2}"/>
-        <stop offset="100%" stop-color="${c3}"/>
-      </linearGradient>
-    </defs>
-    <rect width="${w}" height="${h}" fill="url(#g${seed})"/>
-    ${shapes.join('')}
+    <defs><linearGradient id="g${seed}" gradientTransform="rotate(${angle})">
+      <stop offset="0%" stop-color="${c1}"/><stop offset="50%" stop-color="${c2}"/><stop offset="100%" stop-color="${c3}"/>
+    </linearGradient></defs>
+    <rect width="${w}" height="${h}" fill="url(#g${seed})"/>${shapes.join('')}
     <text x="${w/2}" y="${h/2 + 20}" font-size="80" text-anchor="middle" opacity="0.6">${sty.emoji}</text>
   </svg>`
   return 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)))
 }
 
-// Téléchargement local d'un fichier (data URL → fichier)
+// Génère une "vidéo" mockée via Canvas → MediaRecorder. Renvoie un Blob URL.
+async function generateMockVideo(durationSec, ratio, label, projectColor, seed = 1) {
+  return new Promise((resolve, reject) => {
+    const w = ratio >= 1 ? 640 : 360
+    const h = ratio >= 1 ? Math.round(w / ratio) : Math.round(w / ratio)
+    const canvas = document.createElement('canvas')
+    canvas.width = w; canvas.height = h
+    const ctx = canvas.getContext('2d')
+
+    const stream = canvas.captureStream(30)
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' })
+    const chunks = []
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: 'video/webm' })
+      resolve(URL.createObjectURL(blob))
+    }
+    recorder.onerror = reject
+
+    const startTime = performance.now()
+    const totalMs = durationSec * 1000
+
+    const draw = () => {
+      const elapsed = performance.now() - startTime
+      const t = elapsed / totalMs
+      if (elapsed >= totalMs) {
+        recorder.stop()
+        return
+      }
+      // Dégradé animé
+      const grad = ctx.createLinearGradient(0, 0, w, h)
+      const phase = (elapsed / 1000) + seed
+      const r1 = Math.floor(40 + 30 * Math.sin(phase * 0.5))
+      const g1 = Math.floor(30 + 20 * Math.sin(phase * 0.7))
+      const b1 = Math.floor(80 + 40 * Math.sin(phase * 0.3))
+      grad.addColorStop(0, `rgb(${r1},${g1},${b1})`)
+      grad.addColorStop(1, projectColor)
+      ctx.fillStyle = grad
+      ctx.fillRect(0, 0, w, h)
+
+      // Cercles flottants
+      for (let i = 0; i < 6; i++) {
+        const cx = (Math.sin(phase * 0.3 + i) * 0.5 + 0.5) * w
+        const cy = (Math.cos(phase * 0.4 + i * 1.3) * 0.5 + 0.5) * h
+        const r = 30 + 20 * Math.sin(phase + i)
+        ctx.fillStyle = `rgba(255,255,255,${0.05 + 0.05 * Math.sin(phase + i * 2)})`
+        ctx.beginPath()
+        ctx.arc(cx, cy, r, 0, Math.PI * 2)
+        ctx.fill()
+      }
+
+      // Label central
+      ctx.fillStyle = 'rgba(237,232,219,0.9)'
+      ctx.font = `bold ${Math.floor(h/14)}px Georgia`
+      ctx.textAlign = 'center'
+      ctx.fillText(label, w / 2, h / 2)
+
+      // Timestamp
+      ctx.fillStyle = 'rgba(237,232,219,0.5)'
+      ctx.font = `${Math.floor(h/30)}px monospace`
+      ctx.fillText(`${fmtTime(elapsed/1000)} / ${fmtTime(durationSec)}`, w / 2, h / 2 + Math.floor(h/12))
+
+      // Barre progress
+      ctx.fillStyle = 'rgba(255,255,255,0.1)'
+      ctx.fillRect(20, h - 30, w - 40, 4)
+      ctx.fillStyle = '#7F77DD'
+      ctx.fillRect(20, h - 30, (w - 40) * t, 4)
+
+      requestAnimationFrame(draw)
+    }
+
+    recorder.start()
+    draw()
+  })
+}
+
 function downloadDataUrl(dataUrl, filename) {
   const a = document.createElement('a')
-  a.href = dataUrl
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
+  a.href = dataUrl; a.download = filename
+  document.body.appendChild(a); a.click(); document.body.removeChild(a)
 }
 
-// Sanitize pour nom de fichier
 function slugify(s) {
-  return (s || 'image').toLowerCase()
+  return (s || 'fichier').toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'image'
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'fichier'
 }
 
-// ── MODAL ENREGISTREMENT ──────────────────────────────────────────
+// ── MODAL ENREGISTREMENT VOIX ─────────────────────────────────────
 function RecordingModal({ onClose, onValidate }) {
   const [step, setStep] = useState('idle')
   const [name, setName] = useState('')
@@ -140,11 +212,9 @@ function RecordingModal({ onClose, onValidate }) {
   const [audioBlob, setAudioBlob] = useState(null)
   const [error, setError] = useState(null)
   const [levels, setLevels] = useState([0,0,0,0,0,0,0,0,0,0,0,0])
-
   const mediaRecorderRef = useRef(null)
   const streamRef = useRef(null)
   const audioCtxRef = useRef(null)
-  const analyserRef = useRef(null)
   const animFrameRef = useRef(null)
   const timerRef = useRef(null)
   const chunksRef = useRef([])
@@ -154,15 +224,12 @@ function RecordingModal({ onClose, onValidate }) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
-
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
       const source = audioCtx.createMediaStreamSource(stream)
       const analyser = audioCtx.createAnalyser()
       analyser.fftSize = 64
       source.connect(analyser)
       audioCtxRef.current = audioCtx
-      analyserRef.current = analyser
-
       const dataArray = new Uint8Array(analyser.frequencyBinCount)
       const updateLevels = () => {
         analyser.getByteFrequencyData(dataArray)
@@ -173,25 +240,18 @@ function RecordingModal({ onClose, onValidate }) {
         animFrameRef.current = requestAnimationFrame(updateLevels)
       }
       updateLevels()
-
       const mr = new MediaRecorder(stream)
       chunksRef.current = []
       mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
       mr.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
         const url = URL.createObjectURL(blob)
-        setAudioBlob(blob)
-        setAudioUrl(url)
-        setStep('recorded')
+        setAudioBlob(blob); setAudioUrl(url); setStep('recorded')
       }
       mediaRecorderRef.current = mr
       mr.start()
-
       const startTime = Date.now()
-      timerRef.current = setInterval(() => {
-        setDuration((Date.now() - startTime) / 1000)
-      }, 100)
-
+      timerRef.current = setInterval(() => setDuration((Date.now() - startTime) / 1000), 100)
       setStep('recording')
     } catch (err) {
       setError("Impossible d'acceder au micro. Autorise l'acces dans les parametres de l'OS.")
@@ -200,9 +260,9 @@ function RecordingModal({ onClose, onValidate }) {
   }
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') mediaRecorderRef.current.stop()
+    if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop()
     if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
-    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') audioCtxRef.current.close()
+    if (audioCtxRef.current?.state !== 'closed') audioCtxRef.current?.close()
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
     if (timerRef.current) clearInterval(timerRef.current)
     setLevels([0,0,0,0,0,0,0,0,0,0,0,0])
@@ -220,15 +280,13 @@ function RecordingModal({ onClose, onValidate }) {
     reader.readAsDataURL(audioBlob)
   }
 
-  useEffect(() => {
-    return () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') mediaRecorderRef.current.stop()
-      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
-      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') audioCtxRef.current.close()
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
-      if (timerRef.current) clearInterval(timerRef.current)
-      if (audioUrl) URL.revokeObjectURL(audioUrl)
-    }
+  useEffect(() => () => {
+    if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop()
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
+    if (audioCtxRef.current?.state !== 'closed') audioCtxRef.current?.close()
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
+    if (timerRef.current) clearInterval(timerRef.current)
+    if (audioUrl) URL.revokeObjectURL(audioUrl)
   }, [])
 
   const tooShort = duration < 10
@@ -239,36 +297,21 @@ function RecordingModal({ onClose, onValidate }) {
       <div style={{ background: '#1a1d24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, width: '100%', maxWidth: 500, padding: 28 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h3 style={{ fontSize: 16, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>🎙️ Cloner une voix</h3>
-          {step !== 'recording' && (
-            <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.06)', border: 'none', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', color: 'rgba(237,232,219,0.6)', fontSize: 12 }}>✕</button>
-          )}
+          {step !== 'recording' && <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.06)', border: 'none', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', color: 'rgba(237,232,219,0.6)', fontSize: 12 }}>✕</button>}
         </div>
-
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Nom de la voix *</label>
-          <input value={name} onChange={e => setName(e.target.value)}
-                 placeholder="Ex: Lucien posé, Lucien colère, Voix narrateur..."
-                 disabled={step === 'recording'}
-                 style={{ ...iS, opacity: step === 'recording' ? 0.5 : 1 }} />
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="Ex: Lucien posé, Lucien colère..." disabled={step === 'recording'} style={{ ...iS, opacity: step === 'recording' ? 0.5 : 1 }} />
         </div>
-
         <div style={{ background: 'rgba(127,119,221,0.08)', border: '1px solid rgba(127,119,221,0.2)', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 12, color: 'rgba(237,232,219,0.7)', lineHeight: 1.6 }}>
-          💡 <strong>Conseil :</strong> Lis un texte naturel pendant <strong>au moins 30 secondes</strong>. Plus l'enregistrement est varié (intonations, émotions), meilleur sera le clonage.
+          💡 <strong>Conseil :</strong> Lis un texte naturel pendant <strong>au moins 30 secondes</strong>.
         </div>
-
-        {error && (
-          <div style={{ background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 12, color: '#C75B4E' }}>
-            ⚠️ {error}
-          </div>
-        )}
-
+        {error && <div style={{ background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 12, color: '#C75B4E' }}>⚠️ {error}</div>}
         {step === 'idle' && (
-          <button onClick={startRecording} disabled={!name.trim()}
-                  style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: name.trim() ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 14, fontWeight: 800, cursor: name.trim() ? 'pointer' : 'not-allowed' }}>
+          <button onClick={startRecording} disabled={!name.trim()} style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: name.trim() ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 14, fontWeight: 800, cursor: name.trim() ? 'pointer' : 'not-allowed' }}>
             ● Démarrer l'enregistrement
           </button>
         )}
-
         {step === 'recording' && (
           <div>
             <div style={{ background: 'rgba(199,91,78,0.08)', border: '1px solid rgba(199,91,78,0.3)', borderRadius: 12, padding: 20, textAlign: 'center', marginBottom: 16 }}>
@@ -276,22 +319,14 @@ function RecordingModal({ onClose, onValidate }) {
                 <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#C75B4E', animation: 'studia-pulse 1s infinite' }} />
                 <span style={{ fontSize: 13, fontWeight: 700, color: '#C75B4E' }}>ENREGISTREMENT EN COURS</span>
               </div>
-              <div style={{ fontSize: 36, fontWeight: 900, color: '#EDE8DB', fontFamily: "'Georgia',serif", marginBottom: 14 }}>
-                {fmtTime(duration)}
-              </div>
+              <div style={{ fontSize: 36, fontWeight: 900, color: '#EDE8DB', fontFamily: "'Georgia',serif", marginBottom: 14 }}>{fmtTime(duration)}</div>
               <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 4, height: 50 }}>
-                {levels.map((lvl, i) => (
-                  <div key={i} style={{ width: 6, height: `${Math.max(8, lvl * 50)}px`, background: lvl > 0.5 ? '#C75B4E' : STUDIA_COLOR, borderRadius: 3, transition: 'height 0.05s, background 0.1s' }} />
-                ))}
+                {levels.map((lvl, i) => <div key={i} style={{ width: 6, height: `${Math.max(8, lvl * 50)}px`, background: lvl > 0.5 ? '#C75B4E' : STUDIA_COLOR, borderRadius: 3, transition: 'height 0.05s, background 0.1s' }} />)}
               </div>
             </div>
-            <button onClick={stopRecording}
-                    style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: '#C75B4E', color: '#EDE8DB', fontSize: 14, fontWeight: 800, cursor: 'pointer' }}>
-              ⏹ Arrêter l'enregistrement
-            </button>
+            <button onClick={stopRecording} style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: '#C75B4E', color: '#EDE8DB', fontSize: 14, fontWeight: 800, cursor: 'pointer' }}>⏹ Arrêter l'enregistrement</button>
           </div>
         )}
-
         {step === 'recorded' && (
           <div>
             <div style={{ background: 'rgba(91,199,138,0.08)', border: '1px solid rgba(91,199,138,0.3)', borderRadius: 12, padding: 16, marginBottom: 14 }}>
@@ -301,48 +336,51 @@ function RecordingModal({ onClose, onValidate }) {
               </div>
               {audioUrl && <audio src={audioUrl} controls style={{ width: '100%', height: 36 }} />}
             </div>
-            {tooShort && (
-              <div style={{ background: 'rgba(212,168,83,0.08)', border: '1px solid rgba(212,168,83,0.3)', borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11, color: '#D4A853' }}>
-                ⚠️ Enregistrement court ({fmtTime(duration)}). Pour un clonage de qualité, vise au moins 30s.
-              </div>
-            )}
+            {tooShort && <div style={{ background: 'rgba(212,168,83,0.08)', border: '1px solid rgba(212,168,83,0.3)', borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11, color: '#D4A853' }}>⚠️ Enregistrement court ({fmtTime(duration)}). Vise au moins 30s.</div>}
             <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={reset}
-                      style={{ flex: 1, padding: '12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.7)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                🔄 Recommencer
-              </button>
-              <button onClick={validate} disabled={!name.trim()}
-                      style={{ flex: 1, padding: '12px', borderRadius: 10, border: 'none', background: name.trim() ? '#5BC78A' : 'rgba(91,199,138,0.3)', color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: name.trim() ? 'pointer' : 'not-allowed' }}>
-                ✅ Valider et cloner
-              </button>
+              <button onClick={reset} style={{ flex: 1, padding: '12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.7)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>🔄 Recommencer</button>
+              <button onClick={validate} disabled={!name.trim()} style={{ flex: 1, padding: '12px', borderRadius: 10, border: 'none', background: name.trim() ? '#5BC78A' : 'rgba(91,199,138,0.3)', color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: name.trim() ? 'pointer' : 'not-allowed' }}>✅ Valider et cloner</button>
             </div>
           </div>
         )}
       </div>
-      <style>{`
-        @keyframes studia-pulse {
-          0%, 100% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.5; transform: scale(1.2); }
-        }
-      `}</style>
+      <style>{`@keyframes studia-pulse { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:0.5;transform:scale(1.2);} }`}</style>
     </div>
   )
 }
 
-// ── ONGLET 1 : CLONE IA VOIX ──────────────────────────────────────
+// ── MENU EXPORT ───────────────────────────────────────────────────
+function ExportMenu({ onLocal, onClose, anchorRight = true }) {
+  const items = [
+    { label: '📁 Vers dossier local', enabled: true,  action: onLocal,  badge: null },
+    { label: '🟢 Vers Google Drive',  enabled: false, action: null,     badge: 'Phase 4' },
+    { label: '🟦 Vers Dropbox',       enabled: false, action: null,     badge: 'Phase 4' },
+    { label: '🟪 Vers OneDrive',      enabled: false, action: null,     badge: 'Phase 4' },
+  ]
+  return (
+    <>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 100 }} />
+      <div style={{ position: 'absolute', top: '100%', [anchorRight ? 'right' : 'left']: 0, marginTop: 6, zIndex: 101, background: '#1a1d24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: 6, minWidth: 240, boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
+        {items.map((it, i) => (
+          <button key={i} onClick={() => { if (it.enabled && it.action) { it.action(); onClose() } }} disabled={!it.enabled}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: 'none', background: 'transparent', color: it.enabled ? '#EDE8DB' : 'rgba(237,232,219,0.3)', fontSize: 12, fontWeight: 500, cursor: it.enabled ? 'pointer' : 'not-allowed', textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontFamily: "'Nunito Sans',sans-serif" }}
+                  onMouseEnter={e => { if (it.enabled) e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+            <span>{it.label}</span>
+            {it.badge && <span style={{ fontSize: 9, padding: '2px 7px', borderRadius: 6, background: `${STUDIA_COLOR}20`, color: STUDIA_COLOR, fontWeight: 700 }}>{it.badge}</span>}
+          </button>
+        ))}
+      </div>
+    </>
+  )
+}
+
+// ── ONGLET 1 : VOIX ──────────────────────────────────────────────
 function TabVoix({ project }) {
   const storageKey = `pilotage_studia_voix_${project.id}`
   const audiosKey = `pilotage_studia_audios_${project.id}`
-
-  const [voix, setVoix] = useState(() => {
-    try { const s = localStorage.getItem(storageKey); return s ? JSON.parse(s) : [] }
-    catch { return [] }
-  })
-  const [audios, setAudios] = useState(() => {
-    try { const s = localStorage.getItem(audiosKey); return s ? JSON.parse(s) : [] }
-    catch { return [] }
-  })
-
+  const [voix, setVoix] = useState(() => { try { const s = localStorage.getItem(storageKey); return s ? JSON.parse(s) : [] } catch { return [] } })
+  const [audios, setAudios] = useState(() => { try { const s = localStorage.getItem(audiosKey); return s ? JSON.parse(s) : [] } catch { return [] } })
   const [showRecModal, setShowRecModal] = useState(false)
   const [selectedVoix, setSelectedVoix] = useState('')
   const [ton, setTon] = useState('neutre')
@@ -351,10 +389,8 @@ function TabVoix({ project }) {
   const [generating, setGenerating] = useState(false)
 
   useEffect(() => {
-    try { const s = localStorage.getItem(storageKey); setVoix(s ? JSON.parse(s) : []) }
-    catch { setVoix([]) }
-    try { const s = localStorage.getItem(audiosKey); setAudios(s ? JSON.parse(s) : []) }
-    catch { setAudios([]) }
+    try { setVoix(JSON.parse(localStorage.getItem(storageKey)) || []) } catch { setVoix([]) }
+    try { setAudios(JSON.parse(localStorage.getItem(audiosKey)) || []) } catch { setAudios([]) }
     setSelectedVoix('')
   }, [project.id])
 
@@ -363,22 +399,18 @@ function TabVoix({ project }) {
 
   const handleNewVoix = ({ name, audioData, duration }) => {
     const newVoix = { id: Date.now().toString(), name, audioData, duration, status: 'cloning', createdAt: new Date().toISOString() }
-    const updated = [newVoix, ...voix]
-    persistVoix(updated)
+    persistVoix([newVoix, ...voix])
     setShowRecModal(false)
-    setTimeout(() => {
-      setVoix(prev => {
-        const final = prev.map(v => v.id === newVoix.id ? { ...v, status: 'ready' } : v)
-        localStorage.setItem(storageKey, JSON.stringify(final))
-        return final
-      })
-    }, 3000)
+    setTimeout(() => setVoix(prev => {
+      const final = prev.map(v => v.id === newVoix.id ? { ...v, status: 'ready' } : v)
+      localStorage.setItem(storageKey, JSON.stringify(final))
+      return final
+    }), 3000)
   }
 
   const supprimerVoix = (id) => {
     if (!confirm('Supprimer cette voix ?')) return
-    const updated = voix.filter(v => v.id !== id)
-    persistVoix(updated)
+    persistVoix(voix.filter(v => v.id !== id))
     if (selectedVoix === id) setSelectedVoix('')
   }
 
@@ -389,18 +421,13 @@ function TabVoix({ project }) {
     const v = voix.find(x => x.id === selectedVoix)
     const dur = Math.max(3, texte.split(/\s+/).length * 0.4)
     const mockAudio = await generateSilentWav(dur)
-    const newAudio = {
-      id: Date.now().toString(), voixId: selectedVoix, voixName: v?.name || 'Voix supprimée',
-      ton, vitesse, texte: texte.slice(0, 200), audioData: mockAudio, duration: dur, createdAt: new Date().toISOString(),
-    }
-    const updated = [newAudio, ...audios].slice(0, 20)
-    persistAudios(updated)
+    const newAudio = { id: Date.now().toString(), voixId: selectedVoix, voixName: v?.name || 'Voix supprimée', ton, vitesse, texte: texte.slice(0, 200), audioData: mockAudio, duration: dur, createdAt: new Date().toISOString() }
+    persistAudios([newAudio, ...audios].slice(0, 20))
     setTexte('')
     setGenerating(false)
   }
 
   const supprimerAudio = (id) => persistAudios(audios.filter(a => a.id !== id))
-
   const voixPretes = voix.filter(v => v.status === 'ready')
   const charCount = texte.length
   const tooLong = charCount > 2000
@@ -408,35 +435,23 @@ function TabVoix({ project }) {
   return (
     <>
       {showRecModal && <RecordingModal onClose={() => setShowRecModal(false)} onValidate={handleNewVoix} />}
-
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>
-                🎤 Mes voix clonées {voix.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({voix.length})</span>}
-              </h3>
-              <button onClick={() => setShowRecModal(true)}
-                      style={{ padding: '8px 14px', borderRadius: 10, border: 'none', background: STUDIA_COLOR, color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>
-                🎙️ Cloner ma voix
-              </button>
+              <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>🎤 Mes voix clonées {voix.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({voix.length})</span>}</h3>
+              <button onClick={() => setShowRecModal(true)} style={{ padding: '8px 14px', borderRadius: 10, border: 'none', background: STUDIA_COLOR, color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>🎙️ Cloner ma voix</button>
             </div>
-
             {voix.length === 0 ? (
               <div style={{ background: 'rgba(127,119,221,0.05)', border: `1px dashed ${STUDIA_COLOR}40`, borderRadius: 12, padding: 28, textAlign: 'center' }}>
                 <div style={{ fontSize: 32, marginBottom: 10 }}>🎙️</div>
                 <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)', marginBottom: 6 }}>Aucune voix clonée pour ce projet</p>
-                <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Clique sur "Cloner ma voix" pour démarrer un enregistrement.</p>
+                <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Clique sur "Cloner ma voix" pour démarrer.</p>
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {voix.map(v => (
-                  <div key={v.id} style={{
-                    background: selectedVoix === v.id ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)',
-                    border: `1px solid ${selectedVoix === v.id ? STUDIA_COLOR : 'rgba(255,255,255,0.07)'}`,
-                    borderRadius: 12, padding: 14,
-                  }}>
+                  <div key={v.id} style={{ background: selectedVoix === v.id ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)', border: `1px solid ${selectedVoix === v.id ? STUDIA_COLOR : 'rgba(255,255,255,0.07)'}`, borderRadius: 12, padding: 14 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
                       <div style={{ width: 38, height: 38, borderRadius: '50%', background: `${STUDIA_COLOR}25`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>🎤</div>
                       <div style={{ flex: 1, minWidth: 0 }}>
@@ -446,20 +461,11 @@ function TabVoix({ project }) {
                           {' · '}{fmtTime(v.duration || 0)} d'échantillon
                         </div>
                       </div>
-                      <button onClick={() => supprimerVoix(v.id)}
-                              style={{ padding: '6px 8px', borderRadius: 7, border: '1px solid rgba(199,91,78,0.2)', background: 'transparent', color: '#C75B4E', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}
-                              title="Supprimer">🗑️</button>
+                      <button onClick={() => supprimerVoix(v.id)} style={{ padding: '6px 8px', borderRadius: 7, border: '1px solid rgba(199,91,78,0.2)', background: 'transparent', color: '#C75B4E', fontSize: 11, cursor: 'pointer', flexShrink: 0 }} title="Supprimer">🗑️</button>
                     </div>
                     {v.audioData && v.status === 'ready' && <audio src={v.audioData} controls style={{ width: '100%', height: 32 }} />}
                     {v.status === 'ready' && (
-                      <button onClick={() => setSelectedVoix(v.id)}
-                              style={{
-                                marginTop: 8, width: '100%', padding: '7px', borderRadius: 8,
-                                border: `1px solid ${selectedVoix === v.id ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`,
-                                background: selectedVoix === v.id ? STUDIA_COLOR : 'transparent',
-                                color: selectedVoix === v.id ? '#0D1B2A' : 'rgba(237,232,219,0.6)',
-                                fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                              }}>
+                      <button onClick={() => setSelectedVoix(v.id)} style={{ marginTop: 8, width: '100%', padding: '7px', borderRadius: 8, border: `1px solid ${selectedVoix === v.id ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: selectedVoix === v.id ? STUDIA_COLOR : 'transparent', color: selectedVoix === v.id ? '#0D1B2A' : 'rgba(237,232,219,0.6)', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
                         {selectedVoix === v.id ? '✓ Voix sélectionnée' : 'Sélectionner pour génération →'}
                       </button>
                     )}
@@ -469,15 +475,11 @@ function TabVoix({ project }) {
             )}
           </div>
         </div>
-
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
             <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>✨ Générer un audio</h3>
-
             {voixPretes.length === 0 ? (
-              <div style={{ background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 10, padding: 16, fontSize: 12, color: '#D4A853', textAlign: 'center' }}>
-                ⚠️ Aucune voix prête. Clone d'abord une voix dans la colonne de gauche.
-              </div>
+              <div style={{ background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 10, padding: 16, fontSize: 12, color: '#D4A853', textAlign: 'center' }}>⚠️ Aucune voix prête. Clone d'abord une voix.</div>
             ) : (
               <>
                 <div style={{ marginBottom: 14 }}>
@@ -487,78 +489,44 @@ function TabVoix({ project }) {
                     {voixPretes.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
                   </select>
                 </div>
-
                 <div style={{ marginBottom: 14 }}>
                   <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Ton / Émotion</label>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {TON_OPTIONS.map(t => (
-                      <button key={t.val} onClick={() => setTon(t.val)}
-                              style={{ padding: '6px 12px', borderRadius: 18, border: `1px solid ${ton === t.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: ton === t.val ? `${STUDIA_COLOR}20` : 'transparent', color: ton === t.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: ton === t.val ? 700 : 400, cursor: 'pointer' }}>
-                        {t.label}
-                      </button>
-                    ))}
+                    {TON_OPTIONS.map(t => <button key={t.val} onClick={() => setTon(t.val)} style={{ padding: '6px 12px', borderRadius: 18, border: `1px solid ${ton === t.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: ton === t.val ? `${STUDIA_COLOR}20` : 'transparent', color: ton === t.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: ton === t.val ? 700 : 400, cursor: 'pointer' }}>{t.label}</button>)}
                   </div>
                 </div>
-
                 <div style={{ marginBottom: 14 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                     <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Texte à synthétiser</label>
                     <span style={{ fontSize: 10, color: tooLong ? '#C75B4E' : 'rgba(237,232,219,0.4)', fontWeight: tooLong ? 700 : 400 }}>{charCount} / 2000</span>
                   </div>
-                  <textarea value={texte} onChange={e => setTexte(e.target.value)}
-                            placeholder="Tape ou colle le texte que tu veux faire prononcer par la voix sélectionnée..."
-                            rows={6}
-                            style={{ ...iS, resize: 'vertical', borderColor: tooLong ? 'rgba(199,91,78,0.4)' : 'rgba(255,255,255,0.1)' }} />
+                  <textarea value={texte} onChange={e => setTexte(e.target.value)} placeholder="Tape ou colle le texte à faire prononcer..." rows={6} style={{ ...iS, resize: 'vertical', borderColor: tooLong ? 'rgba(199,91,78,0.4)' : 'rgba(255,255,255,0.1)' }} />
                 </div>
-
                 <div style={{ marginBottom: 16 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                     <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Vitesse</label>
                     <span style={{ fontSize: 11, color: STUDIA_COLOR, fontWeight: 700 }}>{vitesse.toFixed(1)}x</span>
                   </div>
-                  <input type="range" min="0.8" max="1.2" step="0.1" value={vitesse}
-                         onChange={e => setVitesse(parseFloat(e.target.value))}
-                         style={{ width: '100%', accentColor: STUDIA_COLOR }} />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'rgba(237,232,219,0.3)', marginTop: 2 }}>
-                    <span>Lent</span><span>Normal</span><span>Rapide</span>
-                  </div>
+                  <input type="range" min="0.8" max="1.2" step="0.1" value={vitesse} onChange={e => setVitesse(parseFloat(e.target.value))} style={{ width: '100%', accentColor: STUDIA_COLOR }} />
                 </div>
-
-                <button onClick={genererAudio} disabled={!selectedVoix || !texte.trim() || tooLong || generating}
-                        style={{
-                          width: '100%', padding: '12px', borderRadius: 10, border: 'none',
-                          background: (!selectedVoix || !texte.trim() || tooLong || generating) ? `${STUDIA_COLOR}40` : STUDIA_COLOR,
-                          color: '#0D1B2A', fontSize: 13, fontWeight: 800,
-                          cursor: (!selectedVoix || !texte.trim() || tooLong || generating) ? 'not-allowed' : 'pointer',
-                        }}>
-                  {generating ? '⏳ Génération en cours...' : "🎙️ Générer l'audio"}
-                </button>
+                <button onClick={genererAudio} disabled={!selectedVoix || !texte.trim() || tooLong || generating} style={{ width: '100%', padding: '12px', borderRadius: 10, border: 'none', background: (!selectedVoix || !texte.trim() || tooLong || generating) ? `${STUDIA_COLOR}40` : STUDIA_COLOR, color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: (!selectedVoix || !texte.trim() || tooLong || generating) ? 'not-allowed' : 'pointer' }}>{generating ? '⏳ Génération en cours...' : "🎙️ Générer l'audio"}</button>
               </>
             )}
           </div>
-
           {audios.length > 0 && (
             <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
-              <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>
-                Audios générés ({audios.length})
-              </h3>
+              <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>Audios générés ({audios.length})</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 360, overflowY: 'auto' }}>
                 {audios.slice(0, 5).map(a => (
                   <div key={a.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 12 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6, gap: 8 }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 11, fontWeight: 700, color: STUDIA_COLOR }}>🎤 {a.voixName}</div>
-                        <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>
-                          {TON_OPTIONS.find(t => t.val === a.ton)?.label || a.ton} · {a.vitesse}x · {fmtTime(a.duration)}
-                        </div>
+                        <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>{TON_OPTIONS.find(t => t.val === a.ton)?.label || a.ton} · {a.vitesse}x · {fmtTime(a.duration)}</div>
                       </div>
-                      <button onClick={() => supprimerAudio(a.id)}
-                              style={{ padding: '4px 6px', borderRadius: 6, border: 'none', background: 'transparent', color: 'rgba(237,232,219,0.3)', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}
-                              title="Supprimer">✕</button>
+                      <button onClick={() => supprimerAudio(a.id)} style={{ padding: '4px 6px', borderRadius: 6, border: 'none', background: 'transparent', color: 'rgba(237,232,219,0.3)', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}>✕</button>
                     </div>
-                    <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.6)', margin: '0 0 8px', lineHeight: 1.5, fontStyle: 'italic' }}>
-                      "{a.texte}{a.texte.length >= 200 ? '...' : ''}"
-                    </p>
+                    <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.6)', margin: '0 0 8px', lineHeight: 1.5, fontStyle: 'italic' }}>"{a.texte}{a.texte.length >= 200 ? '...' : ''}"</p>
                     <audio src={a.audioData} controls style={{ width: '100%', height: 30 }} />
                   </div>
                 ))}
@@ -571,57 +539,10 @@ function TabVoix({ project }) {
   )
 }
 
-// ── MENU EXPORT (popover) ─────────────────────────────────────────
-function ExportMenu({ onLocal, onClose }) {
-  const items = [
-    { label: '📁 Vers dossier local', enabled: true,  action: onLocal,  badge: null },
-    { label: '🟢 Vers Google Drive',  enabled: false, action: null,     badge: 'Phase 4' },
-    { label: '🟦 Vers Dropbox',       enabled: false, action: null,     badge: 'Phase 4' },
-    { label: '🟪 Vers OneDrive',      enabled: false, action: null,     badge: 'Phase 4' },
-  ]
-  return (
-    <>
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 100 }} />
-      <div style={{
-        position: 'absolute', top: '100%', right: 0, marginTop: 6, zIndex: 101,
-        background: '#1a1d24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10,
-        padding: 6, minWidth: 240, boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-      }}>
-        {items.map((it, i) => (
-          <button key={i}
-                  onClick={() => { if (it.enabled && it.action) { it.action(); onClose() } }}
-                  disabled={!it.enabled}
-                  style={{
-                    width: '100%', padding: '10px 12px', borderRadius: 8, border: 'none',
-                    background: 'transparent',
-                    color: it.enabled ? '#EDE8DB' : 'rgba(237,232,219,0.3)',
-                    fontSize: 12, fontWeight: 500, cursor: it.enabled ? 'pointer' : 'not-allowed',
-                    textAlign: 'left', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    fontFamily: "'Nunito Sans',sans-serif",
-                  }}
-                  onMouseEnter={e => { if (it.enabled) e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
-                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-            <span>{it.label}</span>
-            {it.badge && (
-              <span style={{ fontSize: 9, padding: '2px 7px', borderRadius: 6, background: `${STUDIA_COLOR}20`, color: STUDIA_COLOR, fontWeight: 700 }}>
-                {it.badge}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
-    </>
-  )
-}
-
-// ── ONGLET 2 : PHOTOS & IMAGES IA ─────────────────────────────────
+// ── ONGLET 2 : IMAGES ────────────────────────────────────────────
 function TabImages({ project }) {
   const storageKey = `pilotage_studia_images_${project.id}`
-
-  const [images, setImages] = useState(() => {
-    try { const s = localStorage.getItem(storageKey); return s ? JSON.parse(s) : [] }
-    catch { return [] }
-  })
+  const [images, setImages] = useState(() => { try { const s = localStorage.getItem(storageKey); return s ? JSON.parse(s) : [] } catch { return [] } })
   const [prompt, setPrompt] = useState('')
   const [style, setStyle] = useState('photo')
   const [format, setFormat] = useState('1:1')
@@ -632,11 +553,7 @@ function TabImages({ project }) {
   const [hoverId, setHoverId] = useState(null)
   const [copiedId, setCopiedId] = useState(null)
 
-  useEffect(() => {
-    try { const s = localStorage.getItem(storageKey); setImages(s ? JSON.parse(s) : []) }
-    catch { setImages([]) }
-  }, [project.id])
-
+  useEffect(() => { try { setImages(JSON.parse(localStorage.getItem(storageKey)) || []) } catch { setImages([]) } }, [project.id])
   const persist = (arr) => { localStorage.setItem(storageKey, JSON.stringify(arr)); setImages(arr) }
 
   const generer = async () => {
@@ -646,37 +563,19 @@ function TabImages({ project }) {
     const newImages = []
     for (let i = 0; i < batchSize; i++) {
       const seed = Date.now() + i
-      newImages.push({
-        id: seed.toString() + Math.random().toString(36).slice(2, 6),
-        prompt: prompt.trim(),
-        style, format,
-        dataUrl: generateMockImageSvg(style, format, prompt, seed),
-        createdAt: new Date().toISOString(),
-      })
+      newImages.push({ id: seed.toString() + Math.random().toString(36).slice(2, 6), prompt: prompt.trim(), style, format, dataUrl: generateMockImageSvg(style, format, prompt, seed), createdAt: new Date().toISOString() })
     }
     persist([...newImages, ...images].slice(0, 100))
     setGenerating(false)
   }
 
   const supprimer = (id) => persist(images.filter(i => i.id !== id))
-
-  const copierPrompt = (img) => {
-    navigator.clipboard.writeText(img.prompt)
-    setCopiedId(img.id)
-    setTimeout(() => setCopiedId(null), 1500)
-  }
-
-  const telecharger = (img) => {
-    const ext = img.dataUrl.startsWith('data:image/svg') ? 'svg' : 'png'
-    downloadDataUrl(img.dataUrl, `${slugify(img.prompt)}-${img.id}.${ext}`)
-  }
-
+  const copierPrompt = (img) => { navigator.clipboard.writeText(img.prompt); setCopiedId(img.id); setTimeout(() => setCopiedId(null), 1500) }
+  const telecharger = (img) => { const ext = img.dataUrl.startsWith('data:image/svg') ? 'svg' : 'png'; downloadDataUrl(img.dataUrl, `${slugify(img.prompt)}-${img.id}.${ext}`) }
   const exporterLot = () => {
     const filtered = images.filter(i => filter === 'all' || i.style === filter)
     if (filtered.length === 0) { alert('Aucune image à exporter.'); return }
-    filtered.forEach((img, idx) => {
-      setTimeout(() => telecharger(img), idx * 150)
-    })
+    filtered.forEach((img, idx) => setTimeout(() => telecharger(img), idx * 150))
   }
 
   const filtered = filter === 'all' ? images : images.filter(i => i.style === filter)
@@ -685,118 +584,56 @@ function TabImages({ project }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-      {/* FORM GENERATION */}
       <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
         <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>🎨 Générer des images</h3>
-
         <div style={{ marginBottom: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Prompt (description de l'image)</label>
+            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Prompt</label>
             <span style={{ fontSize: 10, color: tooLong ? '#C75B4E' : 'rgba(237,232,219,0.4)', fontWeight: tooLong ? 700 : 400 }}>{charCount} / 500</span>
           </div>
-          <textarea value={prompt} onChange={e => setPrompt(e.target.value)}
-                    placeholder="Ex: Un homme assis à un bureau en bois face à une fenêtre, lumière dorée du matin, ambiance contemplative..."
-                    rows={3}
-                    style={{ ...iS, resize: 'vertical', borderColor: tooLong ? 'rgba(199,91,78,0.4)' : 'rgba(255,255,255,0.1)' }} />
+          <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Ex: Un homme au bureau face à une fenêtre, lumière dorée du matin..." rows={3} style={{ ...iS, resize: 'vertical', borderColor: tooLong ? 'rgba(199,91,78,0.4)' : 'rgba(255,255,255,0.1)' }} />
         </div>
-
         <div style={{ marginBottom: 14 }}>
           <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Style</label>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {STYLES_IMG.map(s => (
-              <button key={s.val} onClick={() => setStyle(s.val)}
-                      style={{ padding: '7px 12px', borderRadius: 18, border: `1px solid ${style === s.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: style === s.val ? `${STUDIA_COLOR}20` : 'transparent', color: style === s.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: style === s.val ? 700 : 400, cursor: 'pointer' }}>
-                {s.emoji} {s.label}
-              </button>
-            ))}
+            {STYLES_IMG.map(s => <button key={s.val} onClick={() => setStyle(s.val)} style={{ padding: '7px 12px', borderRadius: 18, border: `1px solid ${style === s.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: style === s.val ? `${STUDIA_COLOR}20` : 'transparent', color: style === s.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: style === s.val ? 700 : 400, cursor: 'pointer' }}>{s.emoji} {s.label}</button>)}
           </div>
         </div>
-
         <div style={{ marginBottom: 14 }}>
           <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Format</label>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {FORMATS_IMG.map(f => (
-              <button key={f.val} onClick={() => setFormat(f.val)}
-                      style={{ padding: '7px 12px', borderRadius: 18, border: `1px solid ${format === f.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: format === f.val ? `${STUDIA_COLOR}20` : 'transparent', color: format === f.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: format === f.val ? 700 : 400, cursor: 'pointer' }}>
-                {f.emoji} {f.label} <span style={{ opacity: 0.6, fontSize: 10 }}>({f.dims})</span>
-              </button>
-            ))}
+            {FORMATS_IMG.map(f => <button key={f.val} onClick={() => setFormat(f.val)} style={{ padding: '7px 12px', borderRadius: 18, border: `1px solid ${format === f.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: format === f.val ? `${STUDIA_COLOR}20` : 'transparent', color: format === f.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: format === f.val ? 700 : 400, cursor: 'pointer' }}>{f.emoji} {f.label} <span style={{ opacity: 0.6, fontSize: 10 }}>({f.dims})</span></button>)}
           </div>
         </div>
-
         <div style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
             <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Nombre d'images par lot</label>
-            <span style={{ fontSize: 11, color: STUDIA_COLOR, fontWeight: 700 }}>{batchSize} image{batchSize > 1 ? 's' : ''}</span>
+            <span style={{ fontSize: 11, color: STUDIA_COLOR, fontWeight: 700 }}>{batchSize}</span>
           </div>
-          <input type="range" min="1" max="8" step="1" value={batchSize}
-                 onChange={e => setBatchSize(parseInt(e.target.value))}
-                 style={{ width: '100%', accentColor: STUDIA_COLOR }} />
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'rgba(237,232,219,0.3)', marginTop: 2 }}>
-            <span>1</span><span>4</span><span>8</span>
-          </div>
+          <input type="range" min="1" max="8" step="1" value={batchSize} onChange={e => setBatchSize(parseInt(e.target.value))} style={{ width: '100%', accentColor: STUDIA_COLOR }} />
         </div>
-
-        <button onClick={generer} disabled={!prompt.trim() || tooLong || generating}
-                style={{
-                  width: '100%', padding: '12px', borderRadius: 10, border: 'none',
-                  background: (!prompt.trim() || tooLong || generating) ? `${STUDIA_COLOR}40` : STUDIA_COLOR,
-                  color: '#0D1B2A', fontSize: 13, fontWeight: 800,
-                  cursor: (!prompt.trim() || tooLong || generating) ? 'not-allowed' : 'pointer',
-                }}>
-          {generating ? `⏳ Génération de ${batchSize} image${batchSize > 1 ? 's' : ''}...` : `🎨 Générer ${batchSize} image${batchSize > 1 ? 's' : ''}`}
-        </button>
+        <button onClick={generer} disabled={!prompt.trim() || tooLong || generating} style={{ width: '100%', padding: '12px', borderRadius: 10, border: 'none', background: (!prompt.trim() || tooLong || generating) ? `${STUDIA_COLOR}40` : STUDIA_COLOR, color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: (!prompt.trim() || tooLong || generating) ? 'not-allowed' : 'pointer' }}>{generating ? `⏳ Génération de ${batchSize} image${batchSize > 1 ? 's' : ''}...` : `🎨 Générer ${batchSize} image${batchSize > 1 ? 's' : ''}`}</button>
       </div>
-
-      {/* GALERIE */}
       <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>
-            🖼️ Galerie {images.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({filtered.length}{filter !== 'all' ? `/${images.length}` : ''})</span>}
-          </h3>
+          <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>🖼️ Galerie {images.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({filtered.length}{filter !== 'all' ? `/${images.length}` : ''})</span>}</h3>
           {images.length > 0 && (
-            <div style={{ position: 'relative', display: 'flex', gap: 8 }}>
-              <button onClick={() => setShowExportMenu(!showExportMenu)}
-                      style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(255,255,255,0.04)', color: '#EDE8DB', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
-                ☁️ Exporter le lot ▾
-              </button>
-              {showExportMenu && (
-                <ExportMenu onLocal={exporterLot} onClose={() => setShowExportMenu(false)} />
-              )}
+            <div style={{ position: 'relative' }}>
+              <button onClick={() => setShowExportMenu(!showExportMenu)} style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(255,255,255,0.04)', color: '#EDE8DB', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>☁️ Exporter le lot ▾</button>
+              {showExportMenu && <ExportMenu onLocal={exporterLot} onClose={() => setShowExportMenu(false)} />}
             </div>
           )}
         </div>
-
-        {/* Filtres par style */}
         {images.length > 0 && (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
-            <button onClick={() => setFilter('all')}
-                    style={{ padding: '4px 10px', borderRadius: 14, border: `1px solid ${filter === 'all' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: filter === 'all' ? `${STUDIA_COLOR}20` : 'transparent', color: filter === 'all' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 10, fontWeight: filter === 'all' ? 700 : 400, cursor: 'pointer' }}>
-              Tous ({images.length})
-            </button>
-            {STYLES_IMG.map(s => {
-              const count = images.filter(i => i.style === s.val).length
-              if (count === 0) return null
-              return (
-                <button key={s.val} onClick={() => setFilter(s.val)}
-                        style={{ padding: '4px 10px', borderRadius: 14, border: `1px solid ${filter === s.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: filter === s.val ? `${STUDIA_COLOR}20` : 'transparent', color: filter === s.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 10, fontWeight: filter === s.val ? 700 : 400, cursor: 'pointer' }}>
-                  {s.emoji} {s.label} ({count})
-                </button>
-              )
-            })}
+            <button onClick={() => setFilter('all')} style={{ padding: '4px 10px', borderRadius: 14, border: `1px solid ${filter === 'all' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: filter === 'all' ? `${STUDIA_COLOR}20` : 'transparent', color: filter === 'all' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 10, fontWeight: filter === 'all' ? 700 : 400, cursor: 'pointer' }}>Tous ({images.length})</button>
+            {STYLES_IMG.map(s => { const count = images.filter(i => i.style === s.val).length; if (count === 0) return null; return <button key={s.val} onClick={() => setFilter(s.val)} style={{ padding: '4px 10px', borderRadius: 14, border: `1px solid ${filter === s.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: filter === s.val ? `${STUDIA_COLOR}20` : 'transparent', color: filter === s.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 10, fontWeight: filter === s.val ? 700 : 400, cursor: 'pointer' }}>{s.emoji} {s.label} ({count})</button> })}
           </div>
         )}
-
         {filtered.length === 0 ? (
           <div style={{ background: 'rgba(127,119,221,0.05)', border: `1px dashed ${STUDIA_COLOR}40`, borderRadius: 12, padding: 40, textAlign: 'center' }}>
             <div style={{ fontSize: 36, marginBottom: 10 }}>🖼️</div>
-            <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)', marginBottom: 4 }}>
-              {images.length === 0 ? 'Aucune image générée pour ce projet' : 'Aucune image avec ce filtre'}
-            </p>
-            <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>
-              {images.length === 0 ? 'Lance une génération ci-dessus pour démarrer.' : 'Change de filtre pour voir les autres styles.'}
-            </p>
+            <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)', marginBottom: 4 }}>{images.length === 0 ? 'Aucune image générée' : 'Aucune image avec ce filtre'}</p>
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
@@ -805,44 +642,16 @@ function TabImages({ project }) {
               const fmt = FORMATS_IMG.find(f => f.val === img.format)
               const isHover = hoverId === img.id
               return (
-                <div key={img.id}
-                     onMouseEnter={() => setHoverId(img.id)}
-                     onMouseLeave={() => setHoverId(null)}
-                     style={{ position: 'relative', borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.3)', aspectRatio: fmt?.ratio || 1, cursor: 'pointer' }}>
-                  <img src={img.dataUrl} alt={img.prompt}
-                       style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-
-                  {/* Badge style */}
-                  <div style={{ position: 'absolute', top: 8, left: 8, background: 'rgba(0,0,0,0.7)', color: '#EDE8DB', fontSize: 9, fontWeight: 700, padding: '3px 7px', borderRadius: 6, backdropFilter: 'blur(4px)' }}>
-                    {sty?.emoji} {sty?.label}
-                  </div>
-
-                  {/* Overlay au survol */}
+                <div key={img.id} onMouseEnter={() => setHoverId(img.id)} onMouseLeave={() => setHoverId(null)} style={{ position: 'relative', borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.3)', aspectRatio: fmt?.ratio || 1, cursor: 'pointer' }}>
+                  <img src={img.dataUrl} alt={img.prompt} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                  <div style={{ position: 'absolute', top: 8, left: 8, background: 'rgba(0,0,0,0.7)', color: '#EDE8DB', fontSize: 9, fontWeight: 700, padding: '3px 7px', borderRadius: 6, backdropFilter: 'blur(4px)' }}>{sty?.emoji} {sty?.label}</div>
                   {isHover && (
-                    <div style={{
-                      position: 'absolute', inset: 0,
-                      background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.4) 50%, transparent 100%)',
-                      display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: 10, gap: 8,
-                    }}>
-                      <p style={{ fontSize: 10, color: '#EDE8DB', margin: 0, lineHeight: 1.4, maxHeight: 60, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {img.prompt}
-                      </p>
+                    <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.4) 50%, transparent 100%)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: 10, gap: 8 }}>
+                      <p style={{ fontSize: 10, color: '#EDE8DB', margin: 0, lineHeight: 1.4, maxHeight: 60, overflow: 'hidden', textOverflow: 'ellipsis' }}>{img.prompt}</p>
                       <div style={{ display: 'flex', gap: 4 }}>
-                        <button onClick={() => telecharger(img)}
-                                title="Télécharger"
-                                style={{ flex: 1, padding: '6px', borderRadius: 6, border: 'none', background: STUDIA_COLOR, color: '#0D1B2A', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>
-                          📥
-                        </button>
-                        <button onClick={() => copierPrompt(img)}
-                                title={copiedId === img.id ? 'Copié !' : 'Copier le prompt'}
-                                style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.2)', background: copiedId === img.id ? '#5BC78A' : 'rgba(255,255,255,0.1)', color: copiedId === img.id ? '#0D1B2A' : '#EDE8DB', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>
-                          {copiedId === img.id ? '✓' : '📋'}
-                        </button>
-                        <button onClick={() => supprimer(img.id)}
-                                title="Supprimer"
-                                style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(199,91,78,0.4)', background: 'rgba(199,91,78,0.2)', color: '#C75B4E', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>
-                          🗑️
-                        </button>
+                        <button onClick={() => telecharger(img)} title="Télécharger" style={{ flex: 1, padding: '6px', borderRadius: 6, border: 'none', background: STUDIA_COLOR, color: '#0D1B2A', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>📥</button>
+                        <button onClick={() => copierPrompt(img)} title="Copier prompt" style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.2)', background: copiedId === img.id ? '#5BC78A' : 'rgba(255,255,255,0.1)', color: copiedId === img.id ? '#0D1B2A' : '#EDE8DB', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>{copiedId === img.id ? '✓' : '📋'}</button>
+                        <button onClick={() => supprimer(img.id)} title="Supprimer" style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(199,91,78,0.4)', background: 'rgba(199,91,78,0.2)', color: '#C75B4E', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>🗑️</button>
                       </div>
                     </div>
                   )}
@@ -856,51 +665,488 @@ function TabImages({ project }) {
   )
 }
 
-// ── ONGLET 3 : STUDIO CINÉMA ──────────────────────────────────────
-function TabCinema({ project }) {
+// ── MODAL ANNOTATION VIDÉO ────────────────────────────────────────
+function AnnotationModal({ timestamp, onSave, onClose }) {
+  const [comment, setComment] = useState('')
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 24, height: '100%' }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>📝 Brief vidéo</h3>
-          <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.4)', textAlign: 'center', padding: '40px 0' }}>
-            (Form complet à venir — sujet, durée, voix, style visuel, B-roll auto)
-          </p>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{ background: '#1a1d24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, width: '100%', maxWidth: 460, padding: 24 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>📌 Annoter à {fmtTime(timestamp)}</h3>
+          <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.06)', border: 'none', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', color: 'rgba(237,232,219,0.6)', fontSize: 12 }}>✕</button>
         </div>
-        <div style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 0, overflow: 'hidden' }}>
-          <div style={{ aspectRatio: '16 / 9', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)' }}>
-            <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.3)' }}>🎬 Lecteur vidéo HTML5 (à venir Phase 7)</p>
-          </div>
+        <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.5)', marginBottom: 14 }}>Décris ce que tu veux changer à ce moment précis. L'agent re-générera uniquement cette scène.</p>
+        <textarea value={comment} onChange={e => setComment(e.target.value)} placeholder="Ex: La voix sonne trop monotone ici. Donne plus d'émotion. Et change l'image, on dirait pas le bon contexte." rows={5} style={{ ...iS, resize: 'vertical', marginBottom: 14 }} autoFocus />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: '11px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.7)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Annuler</button>
+          <button onClick={() => { if (comment.trim()) onSave(comment.trim()) }} disabled={!comment.trim()} style={{ flex: 1, padding: '11px', borderRadius: 10, border: 'none', background: comment.trim() ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: comment.trim() ? 'pointer' : 'not-allowed' }}>📌 Enregistrer l'annotation</button>
         </div>
-      </div>
-      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 8 }}>📌 Annotations</h3>
-        <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', marginBottom: 16, lineHeight: 1.5 }}>
-          Clique sur la vidéo à un instant T pour annoter et demander une régénération ciblée.
-        </p>
-        <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.3)', textAlign: 'center', padding: '40px 0', fontStyle: 'italic' }}>
-          (Aucune annotation pour l'instant)
-        </p>
       </div>
     </div>
   )
 }
 
-// ── ONGLET 4 : TUTOS COURTS ───────────────────────────────────────
+// ── ONGLET 3 : STUDIO CINÉMA ──────────────────────────────────────
+function TabCinema({ project }) {
+  const videosKey = `pilotage_studia_videos_${project.id}`
+  const annotationsKey = `pilotage_studia_annotations_${project.id}`
+  const voixKey = `pilotage_studia_voix_${project.id}`
+
+  const [videos, setVideos] = useState(() => { try { return JSON.parse(localStorage.getItem(videosKey)) || [] } catch { return [] } })
+  const [annotations, setAnnotations] = useState(() => { try { return JSON.parse(localStorage.getItem(annotationsKey)) || {} } catch { return {} } })
+  const [voixDispo, setVoixDispo] = useState([])
+
+  const [titre, setTitre] = useState('')
+  const [sujet, setSujet] = useState('')
+  const [duree, setDuree] = useState(5)
+  const [voixId, setVoixId] = useState('')
+  const [styleVid, setStyleVid] = useState('documentaire')
+  const [bRoll, setBRoll] = useState(true)
+  const [generating, setGenerating] = useState(false)
+  const [genPhase, setGenPhase] = useState(0)
+
+  const [activeVideo, setActiveVideo] = useState(null)
+  const [videoUrl, setVideoUrl] = useState(null)
+  const [showAnnotModal, setShowAnnotModal] = useState(false)
+  const [pausedAt, setPausedAt] = useState(0)
+  const videoRef = useRef(null)
+
+  useEffect(() => {
+    try { setVideos(JSON.parse(localStorage.getItem(videosKey)) || []) } catch { setVideos([]) }
+    try { setAnnotations(JSON.parse(localStorage.getItem(annotationsKey)) || {}) } catch { setAnnotations({}) }
+    try {
+      const v = JSON.parse(localStorage.getItem(voixKey)) || []
+      setVoixDispo(v.filter(x => x.status === 'ready'))
+    } catch { setVoixDispo([]) }
+    setActiveVideo(null); setVideoUrl(null)
+  }, [project.id])
+
+  // Régénère la vidéo mockée quand on change de vidéo active
+  useEffect(() => {
+    let cancelled = false
+    if (activeVideo) {
+      setVideoUrl(null)
+      const seed = parseInt(activeVideo.id.slice(-6), 36) || 1
+      generateMockVideo(Math.min(activeVideo.duree * 60, 30), 16/9, activeVideo.titre, project.color || STUDIA_COLOR, seed)
+        .then(url => { if (!cancelled) setVideoUrl(url) })
+        .catch(err => console.error('Erreur génération vidéo mock:', err))
+    }
+    return () => { cancelled = true; if (videoUrl) URL.revokeObjectURL(videoUrl) }
+  }, [activeVideo?.id])
+
+  const persistVideos = (v) => { localStorage.setItem(videosKey, JSON.stringify(v)); setVideos(v) }
+  const persistAnnotations = (a) => { localStorage.setItem(annotationsKey, JSON.stringify(a)); setAnnotations(a) }
+
+  const generer = async () => {
+    if (!titre.trim() || !sujet.trim() || !voixId || generating) return
+    setGenerating(true); setGenPhase(0)
+    for (let i = 0; i < PHASES_VIDEO.length; i++) {
+      setGenPhase(i)
+      await new Promise(r => setTimeout(r, PHASES_VIDEO[i].duration))
+    }
+    const v = voixDispo.find(x => x.id === voixId)
+    const newVideo = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      titre: titre.trim(), sujet: sujet.trim(), duree, voixId, voixName: v?.name || '?',
+      styleVid, bRoll, createdAt: new Date().toISOString(),
+    }
+    persistVideos([newVideo, ...videos].slice(0, 10))
+    setTitre(''); setSujet('')
+    setActiveVideo(newVideo)
+    setGenerating(false); setGenPhase(0)
+  }
+
+  const supprimerVideo = (id) => {
+    if (!confirm('Supprimer cette vidéo et ses annotations ?')) return
+    persistVideos(videos.filter(v => v.id !== id))
+    const newAnnots = { ...annotations }
+    delete newAnnots[id]
+    persistAnnotations(newAnnots)
+    if (activeVideo?.id === id) { setActiveVideo(null); setVideoUrl(null) }
+  }
+
+  const ouvrirAnnotation = () => {
+    if (!videoRef.current) return
+    videoRef.current.pause()
+    setPausedAt(videoRef.current.currentTime)
+    setShowAnnotModal(true)
+  }
+
+  const sauvegarderAnnotation = (comment) => {
+    if (!activeVideo) return
+    const newAnnot = { id: Date.now().toString(), timestamp: pausedAt, comment, status: 'pending', createdAt: new Date().toISOString() }
+    const updated = { ...annotations, [activeVideo.id]: [...(annotations[activeVideo.id] || []), newAnnot].sort((a, b) => a.timestamp - b.timestamp) }
+    persistAnnotations(updated)
+    setShowAnnotModal(false)
+  }
+
+  const supprimerAnnotation = (annotId) => {
+    if (!activeVideo) return
+    const updated = { ...annotations, [activeVideo.id]: (annotations[activeVideo.id] || []).filter(a => a.id !== annotId) }
+    persistAnnotations(updated)
+  }
+
+  const renvoyerEnCorrection = (annotId) => {
+    if (!activeVideo) return
+    const updated = { ...annotations, [activeVideo.id]: (annotations[activeVideo.id] || []).map(a => a.id === annotId ? { ...a, status: 'pending_fix' } : a) }
+    persistAnnotations(updated)
+    setTimeout(() => {
+      setAnnotations(prev => {
+        const final = { ...prev, [activeVideo.id]: (prev[activeVideo.id] || []).map(a => a.id === annotId ? { ...a, status: 'fixed' } : a) }
+        localStorage.setItem(annotationsKey, JSON.stringify(final))
+        return final
+      })
+    }, 2500)
+  }
+
+  const seekTo = (sec) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = sec
+      videoRef.current.play().catch(() => {})
+    }
+  }
+
+  const currentAnnots = activeVideo ? (annotations[activeVideo.id] || []) : []
+  const peutGenerer = titre.trim() && sujet.trim() && voixId && !generating
+
+  return (
+    <>
+      {showAnnotModal && <AnnotationModal timestamp={pausedAt} onSave={sauvegarderAnnotation} onClose={() => setShowAnnotModal(false)} />}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 20 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+          {/* Form Brief */}
+          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
+            <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>📝 Brief vidéo</h3>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+              <div>
+                <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Titre de la vidéo *</label>
+                <input value={titre} onChange={e => setTitre(e.target.value)} placeholder="Ex: Pourquoi Pierucci a été emprisonné..." style={iS} disabled={generating} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Voix narrative *</label>
+                <select value={voixId} onChange={e => setVoixId(e.target.value)} style={{ ...iS, cursor: voixDispo.length > 0 ? 'pointer' : 'not-allowed' }} disabled={generating || voixDispo.length === 0}>
+                  <option value="">{voixDispo.length === 0 ? '— Aucune voix dispo —' : '— Choisir une voix —'}</option>
+                  {voixDispo.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Sujet / Pitch *</label>
+              <textarea value={sujet} onChange={e => setSujet(e.target.value)} placeholder="Décris en 2-3 phrases le sujet de ta vidéo. L'agent script en fera une narration structurée." rows={3} style={{ ...iS, resize: 'vertical' }} disabled={generating} />
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Style visuel</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {STYLES_VIDEO.map(s => <button key={s.val} onClick={() => setStyleVid(s.val)} disabled={generating} style={{ padding: '6px 12px', borderRadius: 18, border: `1px solid ${styleVid === s.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: styleVid === s.val ? `${STUDIA_COLOR}20` : 'transparent', color: styleVid === s.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: styleVid === s.val ? 700 : 400, cursor: generating ? 'not-allowed' : 'pointer' }}>{s.emoji} {s.label}</button>)}
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 16, alignItems: 'center', marginBottom: 16 }}>
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Durée cible</label>
+                  <span style={{ fontSize: 11, color: STUDIA_COLOR, fontWeight: 700 }}>{duree} min</span>
+                </div>
+                <input type="range" min="3" max="12" step="1" value={duree} onChange={e => setDuree(parseInt(e.target.value))} style={{ width: '100%', accentColor: STUDIA_COLOR }} disabled={generating} />
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: generating ? 'not-allowed' : 'pointer', padding: '10px 14px', background: bRoll ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)', border: `1px solid ${bRoll ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, borderRadius: 10 }}>
+                <input type="checkbox" checked={bRoll} onChange={e => setBRoll(e.target.checked)} disabled={generating} style={{ accentColor: STUDIA_COLOR }} />
+                <span style={{ fontSize: 11, fontWeight: 700, color: bRoll ? STUDIA_COLOR : 'rgba(237,232,219,0.5)' }}>🎞️ B-roll auto</span>
+              </label>
+            </div>
+
+            {voixDispo.length === 0 && (
+              <div style={{ background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11, color: '#D4A853' }}>
+                ⚠️ Aucune voix prête. Va dans l'onglet "Clone IA voix" pour cloner ta voix d'abord.
+              </div>
+            )}
+
+            <button onClick={generer} disabled={!peutGenerer} style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: peutGenerer ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 14, fontWeight: 800, cursor: peutGenerer ? 'pointer' : 'not-allowed' }}>
+              {generating ? `${PHASES_VIDEO[genPhase]?.emoji} ${PHASES_VIDEO[genPhase]?.label}...` : '🎬 Générer la vidéo'}
+            </button>
+
+            {generating && (
+              <div style={{ marginTop: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  {PHASES_VIDEO.map((p, i) => (
+                    <div key={p.id} style={{ flex: 1, textAlign: 'center', fontSize: 9, color: i <= genPhase ? STUDIA_COLOR : 'rgba(237,232,219,0.3)', fontWeight: i === genPhase ? 700 : 400 }}>
+                      {i < genPhase ? '✓' : i === genPhase ? '⏳' : '·'} {p.label.split(' ')[0]}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${((genPhase + 1) / PHASES_VIDEO.length) * 100}%`, background: STUDIA_COLOR, transition: 'width 0.3s' }} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Lecteur vidéo */}
+          <div style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, overflow: 'hidden' }}>
+            {!activeVideo ? (
+              <div style={{ aspectRatio: '16 / 9', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', gap: 8 }}>
+                <div style={{ fontSize: 36, opacity: 0.4 }}>🎬</div>
+                <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.4)', margin: 0 }}>Sélectionne une vidéo dans la liste à droite ou génère-en une nouvelle</p>
+              </div>
+            ) : (
+              <>
+                <div style={{ position: 'relative', aspectRatio: '16 / 9', background: '#000' }}>
+                  {videoUrl ? (
+                    <video ref={videoRef} src={videoUrl} controls style={{ width: '100%', height: '100%', display: 'block' }}>
+                      Ton navigateur ne supporte pas la balise vidéo.
+                    </video>
+                  ) : (
+                    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 10 }}>
+                      <div style={{ fontSize: 24, animation: 'studia-pulse 1.5s infinite' }}>⏳</div>
+                      <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.5)', margin: 0 }}>Préparation de la vidéo...</p>
+                    </div>
+                  )}
+                </div>
+                <div style={{ padding: '14px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeVideo.titre}</div>
+                    <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>
+                      {STYLES_VIDEO.find(s => s.val === activeVideo.styleVid)?.label} · 🎤 {activeVideo.voixName} · {activeVideo.duree} min cible
+                    </div>
+                  </div>
+                  <button onClick={ouvrirAnnotation} disabled={!videoUrl} style={{ padding: '8px 14px', borderRadius: 10, border: 'none', background: videoUrl ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 11, fontWeight: 800, cursor: videoUrl ? 'pointer' : 'not-allowed', flexShrink: 0 }}>📌 Annoter ici</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* COLONNE DROITE */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+          {/* Liste vidéos */}
+          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 16 }}>
+            <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>Vidéos générées {videos.length > 0 && `(${videos.length})`}</h3>
+            {videos.length === 0 ? (
+              <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.3)', fontStyle: 'italic', textAlign: 'center', padding: 14 }}>Aucune vidéo encore</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 220, overflowY: 'auto' }}>
+                {videos.map(v => {
+                  const isActive = activeVideo?.id === v.id
+                  const annotCount = (annotations[v.id] || []).length
+                  return (
+                    <div key={v.id} onClick={() => setActiveVideo(v)} style={{ background: isActive ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)', border: `1px solid ${isActive ? STUDIA_COLOR : 'rgba(255,255,255,0.06)'}`, borderRadius: 10, padding: 10, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: isActive ? STUDIA_COLOR : '#EDE8DB', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.titre}</div>
+                        <div style={{ fontSize: 9, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>{STYLES_VIDEO.find(s => s.val === v.styleVid)?.emoji} {v.duree} min · 🎤 {v.voixName}</div>
+                        {annotCount > 0 && <div style={{ fontSize: 9, color: '#D4A853', marginTop: 3 }}>📌 {annotCount} annotation{annotCount > 1 ? 's' : ''}</div>}
+                      </div>
+                      <button onClick={(e) => { e.stopPropagation(); supprimerVideo(v.id) }} style={{ padding: '4px 6px', borderRadius: 6, border: 'none', background: 'transparent', color: 'rgba(237,232,219,0.3)', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}>✕</button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Annotations */}
+          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 16 }}>
+            <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>📌 Annotations {currentAnnots.length > 0 && `(${currentAnnots.length})`}</h3>
+            {!activeVideo ? (
+              <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.3)', fontStyle: 'italic', textAlign: 'center', padding: 14 }}>Sélectionne une vidéo</p>
+            ) : currentAnnots.length === 0 ? (
+              <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.3)', fontStyle: 'italic', textAlign: 'center', padding: 14, lineHeight: 1.5 }}>Pause la vidéo et clique sur "📌 Annoter ici" pour ajouter une remarque.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 360, overflowY: 'auto' }}>
+                {currentAnnots.map(a => {
+                  const statusColor = a.status === 'fixed' ? '#5BC78A' : a.status === 'pending_fix' ? '#D4A853' : 'rgba(237,232,219,0.5)'
+                  const statusLabel = a.status === 'fixed' ? '✅ Corrigé' : a.status === 'pending_fix' ? '⏳ Correction en cours...' : '🕒 En attente'
+                  return (
+                    <div key={a.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 10 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                        <button onClick={() => seekTo(a.timestamp)} title="Aller à ce moment" style={{ background: `${STUDIA_COLOR}20`, border: 'none', borderRadius: 6, padding: '2px 8px', color: STUDIA_COLOR, fontSize: 10, fontWeight: 700, cursor: 'pointer', fontFamily: 'monospace' }}>▶ {fmtTime(a.timestamp)}</button>
+                        <button onClick={() => supprimerAnnotation(a.id)} style={{ padding: '2px 6px', borderRadius: 5, border: 'none', background: 'transparent', color: 'rgba(237,232,219,0.3)', fontSize: 11, cursor: 'pointer' }}>✕</button>
+                      </div>
+                      <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.7)', margin: '0 0 8px', lineHeight: 1.4 }}>{a.comment}</p>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+                        <span style={{ fontSize: 9, color: statusColor, fontWeight: 700 }}>{statusLabel}</span>
+                        {a.status === 'pending' && <button onClick={() => renvoyerEnCorrection(a.id)} style={{ padding: '4px 10px', borderRadius: 6, border: `1px solid ${STUDIA_COLOR}40`, background: 'transparent', color: STUDIA_COLOR, fontSize: 9, fontWeight: 700, cursor: 'pointer' }}>🔄 Renvoyer en correction</button>}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ── ONGLET 4 : SHORTS ─────────────────────────────────────────────
 function TabShorts({ project }) {
+  const shortsKey = `pilotage_studia_shorts_${project.id}`
+  const voixKey = `pilotage_studia_voix_${project.id}`
+  const [shorts, setShorts] = useState(() => { try { return JSON.parse(localStorage.getItem(shortsKey)) || [] } catch { return [] } })
+  const [voixDispo, setVoixDispo] = useState([])
+
+  const [sujet, setSujet] = useState('')
+  const [dureeShort, setDureeShort] = useState(60)
+  const [voixId, setVoixId] = useState('')
+  const [styleS, setStyleS] = useState('demo')
+  const [sousTitres, setSousTitres] = useState(true)
+  const [generating, setGenerating] = useState(false)
+
+  const [shortVideoUrls, setShortVideoUrls] = useState({}) // id → blob URL
+
+  useEffect(() => {
+    try { setShorts(JSON.parse(localStorage.getItem(shortsKey)) || []) } catch { setShorts([]) }
+    try {
+      const v = JSON.parse(localStorage.getItem(voixKey)) || []
+      setVoixDispo(v.filter(x => x.status === 'ready'))
+    } catch { setVoixDispo([]) }
+  }, [project.id])
+
+  // Génère les blob URLs pour chaque short à l'affichage
+  useEffect(() => {
+    let cancelled = false
+    const generateAll = async () => {
+      const newUrls = {}
+      for (const s of shorts.slice(0, 6)) {
+        if (cancelled) return
+        const seed = parseInt(s.id.slice(-6), 36) || 1
+        try {
+          const url = await generateMockVideo(Math.min(s.duree, 8), 9/16, s.sujet.slice(0, 30), project.color || STUDIA_COLOR, seed)
+          if (!cancelled) {
+            newUrls[s.id] = url
+            setShortVideoUrls(prev => ({ ...prev, [s.id]: url }))
+          }
+        } catch (err) { console.error(err) }
+      }
+    }
+    generateAll()
+    return () => {
+      cancelled = true
+      Object.values(shortVideoUrls).forEach(url => { if (url) URL.revokeObjectURL(url) })
+    }
+  }, [shorts.length, project.id])
+
+  const persist = (arr) => { localStorage.setItem(shortsKey, JSON.stringify(arr)); setShorts(arr) }
+
+  const generer = async () => {
+    if (!sujet.trim() || !voixId || generating) return
+    setGenerating(true)
+    await new Promise(r => setTimeout(r, 2500))
+    const v = voixDispo.find(x => x.id === voixId)
+    const newShort = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      sujet: sujet.trim(), duree: dureeShort, voixId, voixName: v?.name || '?', styleS, sousTitres, createdAt: new Date().toISOString(),
+    }
+    persist([newShort, ...shorts].slice(0, 12))
+    setSujet('')
+    setGenerating(false)
+  }
+
+  const supprimer = (id) => {
+    persist(shorts.filter(s => s.id !== id))
+    if (shortVideoUrls[id]) URL.revokeObjectURL(shortVideoUrls[id])
+    setShortVideoUrls(prev => { const c = { ...prev }; delete c[id]; return c })
+  }
+
+  const peutGenerer = sujet.trim() && voixId && !generating
+  const charCount = sujet.length
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
         <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>⚡ Nouveau short (vertical 9:16)</h3>
-        <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.4)', textAlign: 'center', padding: '40px 0' }}>
-          (Form sujet + style visuel à venir — Phase 6)
-        </p>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Sujet du short *</label>
+            <span style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)' }}>{charCount} / 300</span>
+          </div>
+          <textarea value={sujet} onChange={e => setSujet(e.target.value.slice(0, 300))} placeholder="Ex: Comment l'extraterritorialité du droit US fonctionne en 60 secondes" rows={3} style={{ ...iS, resize: 'vertical' }} disabled={generating} />
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+          <div>
+            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Voix narrative *</label>
+            <select value={voixId} onChange={e => setVoixId(e.target.value)} style={{ ...iS, cursor: voixDispo.length > 0 ? 'pointer' : 'not-allowed' }} disabled={generating || voixDispo.length === 0}>
+              <option value="">{voixDispo.length === 0 ? '— Aucune voix dispo —' : '— Choisir une voix —'}</option>
+              {voixDispo.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Durée</label>
+              <span style={{ fontSize: 11, color: STUDIA_COLOR, fontWeight: 700 }}>{dureeShort}s</span>
+            </div>
+            <input type="range" min="30" max="120" step="10" value={dureeShort} onChange={e => setDureeShort(parseInt(e.target.value))} style={{ width: '100%', accentColor: STUDIA_COLOR }} disabled={generating} />
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Style visuel</label>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {STYLES_SHORT.map(s => <button key={s.val} onClick={() => setStyleS(s.val)} disabled={generating} style={{ padding: '6px 12px', borderRadius: 18, border: `1px solid ${styleS === s.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: styleS === s.val ? `${STUDIA_COLOR}20` : 'transparent', color: styleS === s.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: styleS === s.val ? 700 : 400, cursor: generating ? 'not-allowed' : 'pointer' }}>{s.emoji} {s.label}</button>)}
+          </div>
+        </div>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: generating ? 'not-allowed' : 'pointer', padding: '10px 14px', background: sousTitres ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)', border: `1px solid ${sousTitres ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, borderRadius: 10, marginBottom: 16 }}>
+          <input type="checkbox" checked={sousTitres} onChange={e => setSousTitres(e.target.checked)} disabled={generating} style={{ accentColor: STUDIA_COLOR }} />
+          <span style={{ fontSize: 12, fontWeight: 700, color: sousTitres ? STUDIA_COLOR : 'rgba(237,232,219,0.5)' }}>📝 Sous-titres automatiques (recommandé)</span>
+        </label>
+
+        {voixDispo.length === 0 && (
+          <div style={{ background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11, color: '#D4A853' }}>
+            ⚠️ Aucune voix prête. Va cloner une voix dans l'onglet "Clone IA voix".
+          </div>
+        )}
+
+        <button onClick={generer} disabled={!peutGenerer} style={{ width: '100%', padding: '12px', borderRadius: 10, border: 'none', background: peutGenerer ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: peutGenerer ? 'pointer' : 'not-allowed' }}>
+          {generating ? '⏳ Génération du short...' : '⚡ Générer le short'}
+        </button>
       </div>
+
+      {/* Galerie shorts */}
       <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>📱 Mes shorts</h3>
-        <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.4)', textAlign: 'center', padding: '40px 0' }}>
-          (Aucun short généré encore)
-        </p>
+        <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>📱 Mes shorts {shorts.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({shorts.length})</span>}</h3>
+        {shorts.length === 0 ? (
+          <div style={{ background: 'rgba(127,119,221,0.05)', border: `1px dashed ${STUDIA_COLOR}40`, borderRadius: 12, padding: 40, textAlign: 'center' }}>
+            <div style={{ fontSize: 36, marginBottom: 10 }}>📱</div>
+            <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)' }}>Aucun short généré pour ce projet</p>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 14 }}>
+            {shorts.map(s => {
+              const sty = STYLES_SHORT.find(x => x.val === s.styleS)
+              const url = shortVideoUrls[s.id]
+              return (
+                <div key={s.id} style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                  <div style={{ position: 'relative', aspectRatio: '9 / 16', background: '#000' }}>
+                    {url ? (
+                      <video src={url} controls style={{ width: '100%', height: '100%', display: 'block', objectFit: 'cover' }} />
+                    ) : (
+                      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <div style={{ fontSize: 20, animation: 'studia-pulse 1.5s infinite' }}>⏳</div>
+                      </div>
+                    )}
+                    <div style={{ position: 'absolute', top: 6, left: 6, background: 'rgba(0,0,0,0.7)', color: '#EDE8DB', fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 5, backdropFilter: 'blur(4px)' }}>{sty?.emoji} {sty?.label}</div>
+                    <div style={{ position: 'absolute', top: 6, right: 6, background: 'rgba(0,0,0,0.7)', color: '#EDE8DB', fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 5 }}>{s.duree}s</div>
+                    {s.sousTitres && <div style={{ position: 'absolute', bottom: 6, left: 6, background: `${STUDIA_COLOR}d0`, color: '#0D1B2A', fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 5 }}>📝 ST</div>}
+                  </div>
+                  <div style={{ padding: 10 }}>
+                    <p style={{ fontSize: 11, color: '#EDE8DB', margin: '0 0 6px', lineHeight: 1.4, maxHeight: 30, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.sujet}</p>
+                    <div style={{ fontSize: 9, color: 'rgba(237,232,219,0.4)', marginBottom: 8 }}>🎤 {s.voixName}</div>
+                    <button onClick={() => supprimer(s.id)} style={{ width: '100%', padding: '5px', borderRadius: 6, border: '1px solid rgba(199,91,78,0.3)', background: 'rgba(199,91,78,0.08)', color: '#C75B4E', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>🗑️ Supprimer</button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -917,27 +1163,16 @@ export default function PageStudIA({ project }) {
         {TABS.map(t => {
           const isActive = activeTab === t.id
           return (
-            <button key={t.id} onClick={() => setActiveTab(t.id)}
-              style={{
-                padding: '10px 18px', borderRadius: 0, border: 'none', background: 'transparent',
-                color: isActive ? STUDIA_COLOR : 'rgba(237,232,219,0.45)',
-                fontSize: 12, fontWeight: isActive ? 700 : 500, cursor: 'pointer',
-                position: 'relative', transition: 'color 0.15s',
-                borderBottom: isActive ? `2px solid ${STUDIA_COLOR}` : '2px solid transparent', marginBottom: -1,
-              }}>
+            <button key={t.id} onClick={() => setActiveTab(t.id)} style={{ padding: '10px 18px', borderRadius: 0, border: 'none', background: 'transparent', color: isActive ? STUDIA_COLOR : 'rgba(237,232,219,0.45)', fontSize: 12, fontWeight: isActive ? 700 : 500, cursor: 'pointer', position: 'relative', transition: 'color 0.15s', borderBottom: isActive ? `2px solid ${STUDIA_COLOR}` : '2px solid transparent', marginBottom: -1 }}>
               <span style={{ marginRight: 6 }}>{t.emoji}</span>{t.label}
             </button>
           )
         })}
       </div>
-
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20, flexShrink: 0 }}>
-        <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 12, background: `${STUDIA_COLOR}15`, color: STUDIA_COLOR, border: `1px solid ${STUDIA_COLOR}30`, fontWeight: 700 }}>
-          Stud'IA
-        </span>
+        <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 12, background: `${STUDIA_COLOR}15`, color: STUDIA_COLOR, border: `1px solid ${STUDIA_COLOR}30`, fontWeight: 700 }}>Stud'IA</span>
         <span style={{ fontSize: 12, color: 'rgba(237,232,219,0.5)' }}>{tab?.subtitle}</span>
       </div>
-
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {activeTab === 'voix'   && <TabVoix project={project} />}
         {activeTab === 'images' && <TabImages project={project} />}
