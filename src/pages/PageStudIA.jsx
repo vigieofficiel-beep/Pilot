@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const STUDIA_COLOR = '#7F77DD'
 
@@ -9,6 +9,14 @@ const TABS = [
   { id: 'shorts',  label: 'Tutos vidéo courts',  emoji: '⚡', subtitle: 'Shorts 30s-2min vertical 9:16' },
 ]
 
+const TON_OPTIONS = [
+  { val: 'neutre',       label: '😐 Neutre' },
+  { val: 'enthousiaste', label: '😄 Enthousiaste' },
+  { val: 'serieux',      label: '🧐 Sérieux' },
+  { val: 'inquiet',      label: '😟 Inquiet' },
+  { val: 'ironique',     label: '😏 Ironique' },
+]
+
 const iS = {
   width: '100%', padding: '10px 14px', borderRadius: 8,
   background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
@@ -16,24 +24,543 @@ const iS = {
   fontFamily: "'Nunito Sans',sans-serif", boxSizing: 'border-box', lineHeight: 1.6,
 }
 
+function fmtTime(sec) {
+  const m = Math.floor(sec / 60)
+  const s = Math.floor(sec % 60)
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+// Génère un WAV silencieux de N secondes (mock pour l'audio généré)
+function generateSilentWav(durationSec) {
+  const sampleRate = 22050
+  const numSamples = Math.floor(sampleRate * durationSec)
+  const buffer = new ArrayBuffer(44 + numSamples * 2)
+  const view = new DataView(buffer)
+  const writeStr = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)) }
+  writeStr(0, 'RIFF')
+  view.setUint32(4, 36 + numSamples * 2, true)
+  writeStr(8, 'WAVE')
+  writeStr(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, 1, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * 2, true)
+  view.setUint16(32, 2, true)
+  view.setUint16(34, 16, true)
+  writeStr(36, 'data')
+  view.setUint32(40, numSamples * 2, true)
+  // samples are already 0 (silence)
+  const blob = new Blob([buffer], { type: 'audio/wav' })
+  return new Promise(resolve => {
+    const reader = new FileReader()
+    reader.onloadend = () => resolve(reader.result)
+    reader.readAsDataURL(blob)
+  })
+}
+
+// ── MODAL ENREGISTREMENT ──────────────────────────────────────────
+function RecordingModal({ onClose, onValidate }) {
+  const [step, setStep] = useState('idle')      // idle | recording | recorded
+  const [name, setName] = useState('')
+  const [duration, setDuration] = useState(0)
+  const [audioUrl, setAudioUrl] = useState(null)
+  const [audioBlob, setAudioBlob] = useState(null)
+  const [error, setError] = useState(null)
+  const [levels, setLevels] = useState([0,0,0,0,0,0,0,0,0,0,0,0])
+
+  const mediaRecorderRef = useRef(null)
+  const streamRef = useRef(null)
+  const audioCtxRef = useRef(null)
+  const analyserRef = useRef(null)
+  const animFrameRef = useRef(null)
+  const timerRef = useRef(null)
+  const chunksRef = useRef([])
+
+  const startRecording = async () => {
+    setError(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+
+      // Visualiseur audio
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+      const source = audioCtx.createMediaStreamSource(stream)
+      const analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 64
+      source.connect(analyser)
+      audioCtxRef.current = audioCtx
+      analyserRef.current = analyser
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount)
+      const updateLevels = () => {
+        analyser.getByteFrequencyData(dataArray)
+        const newLevels = []
+        const step = Math.floor(dataArray.length / 12)
+        for (let i = 0; i < 12; i++) {
+          newLevels.push(dataArray[i * step] / 255)
+        }
+        setLevels(newLevels)
+        animFrameRef.current = requestAnimationFrame(updateLevels)
+      }
+      updateLevels()
+
+      // MediaRecorder
+      const mr = new MediaRecorder(stream)
+      chunksRef.current = []
+      mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+      mr.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        const url = URL.createObjectURL(blob)
+        setAudioBlob(blob)
+        setAudioUrl(url)
+        setStep('recorded')
+      }
+      mediaRecorderRef.current = mr
+      mr.start()
+
+      // Timer
+      const startTime = Date.now()
+      timerRef.current = setInterval(() => {
+        setDuration((Date.now() - startTime) / 1000)
+      }, 100)
+
+      setStep('recording')
+    } catch (err) {
+      setError("Impossible d'acceder au micro. Autorise l'acces dans les parametres de l'OS.")
+      console.error(err)
+    }
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop()
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop())
+    }
+    if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
+      audioCtxRef.current.close()
+    }
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
+    if (timerRef.current) clearInterval(timerRef.current)
+    setLevels([0,0,0,0,0,0,0,0,0,0,0,0])
+  }
+
+  const reset = () => {
+    if (audioUrl) URL.revokeObjectURL(audioUrl)
+    setAudioUrl(null)
+    setAudioBlob(null)
+    setDuration(0)
+    setStep('idle')
+  }
+
+  const validate = async () => {
+    if (!name.trim() || !audioBlob) return
+    const reader = new FileReader()
+    reader.onloadend = () => {
+      onValidate({ name: name.trim(), audioData: reader.result, duration })
+    }
+    reader.readAsDataURL(audioBlob)
+  }
+
+  // Cleanup à la fermeture
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop()
+      }
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
+      if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') audioCtxRef.current.close()
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
+      if (timerRef.current) clearInterval(timerRef.current)
+      if (audioUrl) URL.revokeObjectURL(audioUrl)
+    }
+  }, [])
+
+  const tooShort = duration < 10
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.88)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+         onClick={e => { if (e.target === e.currentTarget && step !== 'recording') onClose() }}>
+      <div style={{ background: '#1a1d24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, width: '100%', maxWidth: 500, padding: 28 }}>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>🎙️ Cloner une voix</h3>
+          {step !== 'recording' && (
+            <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.06)', border: 'none', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', color: 'rgba(237,232,219,0.6)', fontSize: 12 }}>✕</button>
+          )}
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Nom de la voix *</label>
+          <input value={name} onChange={e => setName(e.target.value)}
+                 placeholder="Ex: Lucien posé, Lucien colère, Voix narrateur..."
+                 disabled={step === 'recording'}
+                 style={{ ...iS, opacity: step === 'recording' ? 0.5 : 1 }} />
+        </div>
+
+        <div style={{ background: 'rgba(127,119,221,0.08)', border: '1px solid rgba(127,119,221,0.2)', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 12, color: 'rgba(237,232,219,0.7)', lineHeight: 1.6 }}>
+          💡 <strong>Conseil :</strong> Lis un texte naturel pendant <strong>au moins 30 secondes</strong>. Plus l'enregistrement est varié (intonations, émotions), meilleur sera le clonage.
+        </div>
+
+        {error && (
+          <div style={{ background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 12, color: '#C75B4E' }}>
+            ⚠️ {error}
+          </div>
+        )}
+
+        {/* État IDLE */}
+        {step === 'idle' && (
+          <button onClick={startRecording} disabled={!name.trim()}
+                  style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: name.trim() ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 14, fontWeight: 800, cursor: name.trim() ? 'pointer' : 'not-allowed' }}>
+            ● Démarrer l'enregistrement
+          </button>
+        )}
+
+        {/* État RECORDING */}
+        {step === 'recording' && (
+          <div>
+            <div style={{ background: 'rgba(199,91,78,0.08)', border: '1px solid rgba(199,91,78,0.3)', borderRadius: 12, padding: 20, textAlign: 'center', marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 14 }}>
+                <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#C75B4E', animation: 'studia-pulse 1s infinite' }} />
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#C75B4E' }}>ENREGISTREMENT EN COURS</span>
+              </div>
+              <div style={{ fontSize: 36, fontWeight: 900, color: '#EDE8DB', fontFamily: "'Georgia',serif", marginBottom: 14 }}>
+                {fmtTime(duration)}
+              </div>
+              {/* Visualiseur barres */}
+              <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 4, height: 50 }}>
+                {levels.map((lvl, i) => (
+                  <div key={i} style={{
+                    width: 6,
+                    height: `${Math.max(8, lvl * 50)}px`,
+                    background: lvl > 0.5 ? '#C75B4E' : STUDIA_COLOR,
+                    borderRadius: 3,
+                    transition: 'height 0.05s, background 0.1s',
+                  }} />
+                ))}
+              </div>
+            </div>
+            <button onClick={stopRecording}
+                    style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: '#C75B4E', color: '#EDE8DB', fontSize: 14, fontWeight: 800, cursor: 'pointer' }}>
+              ⏹ Arrêter l'enregistrement
+            </button>
+          </div>
+        )}
+
+        {/* État RECORDED */}
+        {step === 'recorded' && (
+          <div>
+            <div style={{ background: 'rgba(91,199,138,0.08)', border: '1px solid rgba(91,199,138,0.3)', borderRadius: 12, padding: 16, marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#5BC78A' }}>✅ Enregistrement capturé</span>
+                <span style={{ fontSize: 11, color: 'rgba(237,232,219,0.5)' }}>{fmtTime(duration)}</span>
+              </div>
+              {audioUrl && (
+                <audio src={audioUrl} controls style={{ width: '100%', height: 36 }} />
+              )}
+            </div>
+            {tooShort && (
+              <div style={{ background: 'rgba(212,168,83,0.08)', border: '1px solid rgba(212,168,83,0.3)', borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11, color: '#D4A853' }}>
+                ⚠️ Enregistrement court ({fmtTime(duration)}). Pour un clonage de qualité, vise au moins 30s.
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={reset}
+                      style={{ flex: 1, padding: '12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.7)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                🔄 Recommencer
+              </button>
+              <button onClick={validate} disabled={!name.trim()}
+                      style={{ flex: 1, padding: '12px', borderRadius: 10, border: 'none', background: name.trim() ? '#5BC78A' : 'rgba(91,199,138,0.3)', color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: name.trim() ? 'pointer' : 'not-allowed' }}>
+                ✅ Valider et cloner
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      <style>{`
+        @keyframes studia-pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.5; transform: scale(1.2); }
+        }
+      `}</style>
+    </div>
+  )
+}
+
 // ── ONGLET 1 : CLONE IA VOIX ──────────────────────────────────────
 function TabVoix({ project }) {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, height: '100%' }}>
-      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>🎤 Mes voix clonées</h3>
-        <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.4)', textAlign: 'center', padding: '40px 0' }}>
-          (Phase 1 frontend mocké — aucune voix encore. Phase 3 : XTTS sur RunPod)
-        </p>
-      </div>
+  const storageKey = `pilotage_studia_voix_${project.id}`
+  const audiosKey = `pilotage_studia_audios_${project.id}`
 
-      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>✨ Générer un audio</h3>
-        <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.4)', textAlign: 'center', padding: '40px 0' }}>
-          (Form de génération à venir — texte → audio synthétisé)
-        </p>
+  const [voix, setVoix] = useState(() => {
+    try { const s = localStorage.getItem(storageKey); return s ? JSON.parse(s) : [] }
+    catch { return [] }
+  })
+  const [audios, setAudios] = useState(() => {
+    try { const s = localStorage.getItem(audiosKey); return s ? JSON.parse(s) : [] }
+    catch { return [] }
+  })
+
+  const [showRecModal, setShowRecModal] = useState(false)
+  const [selectedVoix, setSelectedVoix] = useState('')
+  const [ton, setTon] = useState('neutre')
+  const [vitesse, setVitesse] = useState(1.0)
+  const [texte, setTexte] = useState('')
+  const [generating, setGenerating] = useState(false)
+
+  // Recharger quand le projet change
+  useEffect(() => {
+    try { const s = localStorage.getItem(storageKey); setVoix(s ? JSON.parse(s) : []) }
+    catch { setVoix([]) }
+    try { const s = localStorage.getItem(audiosKey); setAudios(s ? JSON.parse(s) : []) }
+    catch { setAudios([]) }
+    setSelectedVoix('')
+  }, [project.id])
+
+  const persistVoix = (v) => { localStorage.setItem(storageKey, JSON.stringify(v)); setVoix(v) }
+  const persistAudios = (a) => { localStorage.setItem(audiosKey, JSON.stringify(a)); setAudios(a) }
+
+  const handleNewVoix = ({ name, audioData, duration }) => {
+    const newVoix = {
+      id: Date.now().toString(),
+      name,
+      audioData,
+      duration,
+      status: 'cloning',
+      createdAt: new Date().toISOString(),
+    }
+    const updated = [newVoix, ...voix]
+    persistVoix(updated)
+    setShowRecModal(false)
+
+    // Simule le clonage : 3s puis "ready"
+    setTimeout(() => {
+      setVoix(prev => {
+        const final = prev.map(v => v.id === newVoix.id ? { ...v, status: 'ready' } : v)
+        localStorage.setItem(storageKey, JSON.stringify(final))
+        return final
+      })
+    }, 3000)
+  }
+
+  const supprimerVoix = (id) => {
+    if (!confirm('Supprimer cette voix ?')) return
+    const updated = voix.filter(v => v.id !== id)
+    persistVoix(updated)
+    if (selectedVoix === id) setSelectedVoix('')
+  }
+
+  const genererAudio = async () => {
+    if (!selectedVoix || !texte.trim() || generating) return
+    setGenerating(true)
+    // Simule 2s de génération
+    await new Promise(r => setTimeout(r, 2000))
+    const v = voix.find(x => x.id === selectedVoix)
+    const dur = Math.max(3, texte.split(/\s+/).length * 0.4)
+    const mockAudio = await generateSilentWav(dur)
+    const newAudio = {
+      id: Date.now().toString(),
+      voixId: selectedVoix,
+      voixName: v?.name || 'Voix supprimée',
+      ton,
+      vitesse,
+      texte: texte.slice(0, 200),
+      audioData: mockAudio,
+      duration: dur,
+      createdAt: new Date().toISOString(),
+    }
+    const updated = [newAudio, ...audios].slice(0, 20)
+    persistAudios(updated)
+    setTexte('')
+    setGenerating(false)
+  }
+
+  const supprimerAudio = (id) => {
+    persistAudios(audios.filter(a => a.id !== id))
+  }
+
+  const voixPretes = voix.filter(v => v.status === 'ready')
+  const charCount = texte.length
+  const tooLong = charCount > 2000
+
+  return (
+    <>
+      {showRecModal && <RecordingModal onClose={() => setShowRecModal(false)} onValidate={handleNewVoix} />}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+
+        {/* COLONNE GAUCHE — Mes voix */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>
+                🎤 Mes voix clonées {voix.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({voix.length})</span>}
+              </h3>
+              <button onClick={() => setShowRecModal(true)}
+                      style={{ padding: '8px 14px', borderRadius: 10, border: 'none', background: STUDIA_COLOR, color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>
+                🎙️ Cloner ma voix
+              </button>
+            </div>
+
+            {voix.length === 0 ? (
+              <div style={{ background: 'rgba(127,119,221,0.05)', border: `1px dashed ${STUDIA_COLOR}40`, borderRadius: 12, padding: 28, textAlign: 'center' }}>
+                <div style={{ fontSize: 32, marginBottom: 10 }}>🎙️</div>
+                <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)', marginBottom: 6 }}>Aucune voix clonée pour ce projet</p>
+                <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Clique sur "Cloner ma voix" pour démarrer un enregistrement.</p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {voix.map(v => (
+                  <div key={v.id} style={{
+                    background: selectedVoix === v.id ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)',
+                    border: `1px solid ${selectedVoix === v.id ? STUDIA_COLOR : 'rgba(255,255,255,0.07)'}`,
+                    borderRadius: 12, padding: 14,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+                      <div style={{ width: 38, height: 38, borderRadius: '50%', background: `${STUDIA_COLOR}25`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>
+                        🎤
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.name}</div>
+                        <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>
+                          {v.status === 'cloning' ? (
+                            <span style={{ color: '#D4A853' }}>⏳ Clonage en cours...</span>
+                          ) : (
+                            <span style={{ color: '#5BC78A' }}>✅ Prête</span>
+                          )}
+                          {' · '}{fmtTime(v.duration || 0)} d'échantillon
+                        </div>
+                      </div>
+                      <button onClick={() => supprimerVoix(v.id)}
+                              style={{ padding: '6px 8px', borderRadius: 7, border: '1px solid rgba(199,91,78,0.2)', background: 'transparent', color: '#C75B4E', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}
+                              title="Supprimer">🗑️</button>
+                    </div>
+                    {v.audioData && v.status === 'ready' && (
+                      <audio src={v.audioData} controls style={{ width: '100%', height: 32 }} />
+                    )}
+                    {v.status === 'ready' && (
+                      <button onClick={() => setSelectedVoix(v.id)}
+                              style={{
+                                marginTop: 8, width: '100%', padding: '7px', borderRadius: 8,
+                                border: `1px solid ${selectedVoix === v.id ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`,
+                                background: selectedVoix === v.id ? STUDIA_COLOR : 'transparent',
+                                color: selectedVoix === v.id ? '#0D1B2A' : 'rgba(237,232,219,0.6)',
+                                fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                              }}>
+                        {selectedVoix === v.id ? '✓ Voix sélectionnée' : 'Sélectionner pour génération →'}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* COLONNE DROITE — Générer un audio */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
+            <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>✨ Générer un audio</h3>
+
+            {voixPretes.length === 0 ? (
+              <div style={{ background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 10, padding: 16, fontSize: 12, color: '#D4A853', textAlign: 'center' }}>
+                ⚠️ Aucune voix prête. Clone d'abord une voix dans la colonne de gauche.
+              </div>
+            ) : (
+              <>
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Voix</label>
+                  <select value={selectedVoix} onChange={e => setSelectedVoix(e.target.value)} style={{ ...iS, cursor: 'pointer' }}>
+                    <option value="">— Choisir une voix —</option>
+                    {voixPretes.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                  </select>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Ton / Émotion</label>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {TON_OPTIONS.map(t => (
+                      <button key={t.val} onClick={() => setTon(t.val)}
+                              style={{ padding: '6px 12px', borderRadius: 18, border: `1px solid ${ton === t.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: ton === t.val ? `${STUDIA_COLOR}20` : 'transparent', color: ton === t.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: ton === t.val ? 700 : 400, cursor: 'pointer' }}>
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Texte à synthétiser</label>
+                    <span style={{ fontSize: 10, color: tooLong ? '#C75B4E' : 'rgba(237,232,219,0.4)', fontWeight: tooLong ? 700 : 400 }}>
+                      {charCount} / 2000
+                    </span>
+                  </div>
+                  <textarea value={texte} onChange={e => setTexte(e.target.value)}
+                            placeholder="Tape ou colle le texte que tu veux faire prononcer par la voix sélectionnée..."
+                            rows={6}
+                            style={{ ...iS, resize: 'vertical', borderColor: tooLong ? 'rgba(199,91,78,0.4)' : 'rgba(255,255,255,0.1)' }} />
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Vitesse</label>
+                    <span style={{ fontSize: 11, color: STUDIA_COLOR, fontWeight: 700 }}>{vitesse.toFixed(1)}x</span>
+                  </div>
+                  <input type="range" min="0.8" max="1.2" step="0.1" value={vitesse}
+                         onChange={e => setVitesse(parseFloat(e.target.value))}
+                         style={{ width: '100%', accentColor: STUDIA_COLOR }} />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'rgba(237,232,219,0.3)', marginTop: 2 }}>
+                    <span>Lent</span><span>Normal</span><span>Rapide</span>
+                  </div>
+                </div>
+
+                <button onClick={genererAudio} disabled={!selectedVoix || !texte.trim() || tooLong || generating}
+                        style={{
+                          width: '100%', padding: '12px', borderRadius: 10, border: 'none',
+                          background: (!selectedVoix || !texte.trim() || tooLong || generating) ? `${STUDIA_COLOR}40` : STUDIA_COLOR,
+                          color: '#0D1B2A', fontSize: 13, fontWeight: 800,
+                          cursor: (!selectedVoix || !texte.trim() || tooLong || generating) ? 'not-allowed' : 'pointer',
+                        }}>
+                  {generating ? '⏳ Génération en cours...' : "🎙️ Générer l'audio"}
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Historique audios */}
+          {audios.length > 0 && (
+            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
+              <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>
+                Audios générés ({audios.length})
+              </h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 360, overflowY: 'auto' }}>
+                {audios.slice(0, 5).map(a => (
+                  <div key={a.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 12 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6, gap: 8 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: STUDIA_COLOR }}>🎤 {a.voixName}</div>
+                        <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>
+                          {TON_OPTIONS.find(t => t.val === a.ton)?.label || a.ton} · {a.vitesse}x · {fmtTime(a.duration)}
+                        </div>
+                      </div>
+                      <button onClick={() => supprimerAudio(a.id)}
+                              style={{ padding: '4px 6px', borderRadius: 6, border: 'none', background: 'transparent', color: 'rgba(237,232,219,0.3)', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}
+                              title="Supprimer">✕</button>
+                    </div>
+                    <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.6)', margin: '0 0 8px', lineHeight: 1.5, fontStyle: 'italic' }}>
+                      "{a.texte}{a.texte.length >= 200 ? '...' : ''}"
+                    </p>
+                    <audio src={a.audioData} controls style={{ width: '100%', height: 30 }} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   )
 }
 
