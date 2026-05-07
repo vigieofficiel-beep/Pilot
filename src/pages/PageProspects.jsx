@@ -521,6 +521,8 @@ export default function PageProspects({ project }) {
   const [relancesLoading,   setRelancesLoading]   = useState(false)
   const [relanceMessages,   setRelanceMessages]   = useState({})
   const [relanceDelayDays,  setRelanceDelayDays]  = useState(7)
+  const [bulkGenProgress,   setBulkGenProgress]   = useState(null)  // {current, total} ou null
+  const [bulkSendProgress,  setBulkSendProgress]  = useState(null)  // {current, total} ou null
 
   const csvRef = useRef(null)
 
@@ -1082,6 +1084,107 @@ export default function PageProspects({ project }) {
     showMsg('⏭️ Prospect ignoré pour cette session', 2000)
   }
 
+  /**
+   * BULK — Génère toutes les relances séquentiellement (Tâche #4).
+   * Skip les prospects qui ont déjà un message généré.
+   */
+  const genererToutesLesRelances = async () => {
+    const aGenerer = relancesEligibles.filter(p => {
+      const msg = relanceMessages[p.id]
+      return !msg || (!msg.sujet && !msg.generating)
+    })
+
+    if (aGenerer.length === 0) {
+      showMsg('ℹ️ Toutes les relances sont déjà générées', 3000)
+      return
+    }
+
+    if (!confirm(`Générer ${aGenerer.length} relance${aGenerer.length > 1 ? 's' : ''} séquentiellement ?\n\nDurée estimée : ~${Math.ceil(aGenerer.length * 12 / 60)} minute${aGenerer.length * 12 > 60 ? 's' : ''}.\n\nTu pourras relire et éditer chaque message avant l'envoi.`)) return
+
+    setBulkGenProgress({ current: 0, total: aGenerer.length })
+    let succeeded = 0
+    let failed = 0
+
+    for (let i = 0; i < aGenerer.length; i++) {
+      const prospect = aGenerer[i]
+      setBulkGenProgress({ current: i + 1, total: aGenerer.length })
+      try {
+        await genererRelancePourProspect(prospect)
+        succeeded++
+      } catch (err) {
+        failed++
+      }
+    }
+
+    setBulkGenProgress(null)
+    showMsg(`✅ Génération terminée : ${succeeded} OK${failed > 0 ? `, ${failed} échec(s)` : ''}`, 5000)
+  }
+
+  /**
+   * BULK — Envoie toutes les relances générées et non encore envoyées (Tâche #4).
+   */
+  const envoyerToutesLesRelances = async () => {
+    const aEnvoyer = relancesEligibles.filter(p => {
+      const msg = relanceMessages[p.id]
+      return msg && msg.sujet && msg.message && !msg.sent && !msg.sending
+    })
+
+    if (aEnvoyer.length === 0) {
+      showMsg('ℹ️ Aucune relance prête à envoyer', 3000)
+      return
+    }
+
+    if (!confirm(`Envoyer ${aEnvoyer.length} relance${aEnvoyer.length > 1 ? 's' : ''} ?\n\nAction IRRÉVERSIBLE. Les emails seront envoyés un par un via Resend.\n\nDurée estimée : ~${Math.ceil(aEnvoyer.length * 2 / 60)} minute(s).`)) return
+
+    setBulkSendProgress({ current: 0, total: aEnvoyer.length })
+    let succeeded = 0
+    let failed = 0
+
+    for (let i = 0; i < aEnvoyer.length; i++) {
+      const prospect = aEnvoyer[i]
+      setBulkSendProgress({ current: i + 1, total: aEnvoyer.length })
+      const msg = relanceMessages[prospect.id]
+      if (!msg || !msg.sujet || !msg.message) { failed++; continue }
+
+      // Marker "sending"
+      setRelanceMessages(prev => ({
+        ...prev,
+        [prospect.id]: { ...prev[prospect.id], sending: true }
+      }))
+
+      try {
+        const result = await envoyerRelanceViaAgent({
+          prospectId: prospect.id,
+          sujet: msg.sujet,
+          message: msg.message,
+        })
+
+        setRelanceMessages(prev => ({
+          ...prev,
+          [prospect.id]: { ...prev[prospect.id], sending: false, sent: true, sentAt: result.envoye_le }
+        }))
+
+        const updates = {
+          relance_envoyee_le: result.envoye_le,
+          relance_resend_id: result.resend_id,
+          relance_sujet: msg.sujet,
+          relance_message: msg.message,
+        }
+        setProspects(curr => curr.map(p => p.id === prospect.id ? { ...p, ...updates } : p))
+        succeeded++
+      } catch (err) {
+        setRelanceMessages(prev => ({
+          ...prev,
+          [prospect.id]: { ...prev[prospect.id], sending: false, error: err.message }
+        }))
+        failed++
+      }
+    }
+
+    setBulkSendProgress(null)
+    showMsg(`✅ Envoi terminé : ${succeeded} envoyée(s)${failed > 0 ? `, ${failed} échec(s)` : ''}`, 6000)
+  }
+
   // ============================================
   // RENDU
   // ============================================
@@ -1593,10 +1696,21 @@ export default function PageProspects({ project }) {
                 <input type="number" min={0} max={90} value={relanceDelayDays}
                   onChange={e => setRelanceDelayDays(Math.max(0, Math.min(90, parseInt(e.target.value) || 0)))}
                   style={{width: 60, padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.03)', color: '#EDE8DB', fontSize: 12, fontFamily: "'Nunito Sans', sans-serif"}}/>
-                <button onClick={rechargerEligibles} disabled={relancesLoading}
-                  style={{padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(168,91,199,0.4)', background: 'rgba(168,91,199,0.1)', color: '#A85BC7', fontSize: 11, fontWeight: 700, cursor: relancesLoading ? 'not-allowed' : 'pointer', opacity: relancesLoading ? 0.5 : 1}}>
+                <button onClick={rechargerEligibles} disabled={relancesLoading || !!bulkGenProgress || !!bulkSendProgress}
+                  style={{padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(168,91,199,0.4)', background: 'rgba(168,91,199,0.1)', color: '#A85BC7', fontSize: 11, fontWeight: 700, cursor: (relancesLoading || bulkGenProgress || bulkSendProgress) ? 'not-allowed' : 'pointer', opacity: (relancesLoading || bulkGenProgress || bulkSendProgress) ? 0.5 : 1}}>
                   🔄 Recharger
                 </button>
+                {relancesEligibles.length > 0 && !bulkGenProgress && !bulkSendProgress && (
+                  <button onClick={genererToutesLesRelances}
+                    style={{padding: '6px 12px', borderRadius: 8, border: 'none', background: '#A85BC7', color: '#0D1B2A', fontSize: 11, fontWeight: 800, cursor: 'pointer'}}>
+                    ⚡ Générer tout
+                  </button>
+                )}
+                {bulkGenProgress && (
+                  <div style={{padding: '6px 12px', borderRadius: 8, background: 'rgba(168,91,199,0.15)', border: '1px solid rgba(168,91,199,0.4)', color: '#C39BD3', fontSize: 11, fontWeight: 700}}>
+                    ⏳ Génération {bulkGenProgress.current}/{bulkGenProgress.total}...
+                  </div>
+                )}
                 <button onClick={fermerModalRelances}
                   style={{padding: '6px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.6)', fontSize: 14, fontWeight: 700, cursor: 'pointer'}}>
                   ✕
@@ -1723,14 +1837,38 @@ export default function PageProspects({ project }) {
               )}
             </div>
 
-            <div style={{padding: '14px 24px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0, fontSize: 11, color: 'rgba(237,232,219,0.5)'}}>
+            <div style={{padding: '14px 24px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0, fontSize: 11, color: 'rgba(237,232,219,0.5)', gap: 12, flexWrap: 'wrap'}}>
               <span>
                 {Object.values(relanceMessages).filter(m => m.sent).length} envoyée(s) sur cette session
               </span>
-              <button onClick={fermerModalRelances}
-                style={{padding: '8px 16px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.7)', fontSize: 12, fontWeight: 700, cursor: 'pointer'}}>
-                Fermer
-              </button>
+              <div style={{display: 'flex', gap: 8, alignItems: 'center'}}>
+                {(() => {
+                  const prets = relancesEligibles.filter(p => {
+                    const msg = relanceMessages[p.id]
+                    return msg && msg.sujet && msg.message && !msg.sent && !msg.sending
+                  }).length
+                  if (bulkSendProgress) {
+                    return (
+                      <div style={{padding: '8px 14px', borderRadius: 8, background: 'rgba(91,199,138,0.15)', border: '1px solid rgba(91,199,138,0.4)', color: '#5BC78A', fontSize: 11, fontWeight: 700}}>
+                        ⏳ Envoi {bulkSendProgress.current}/{bulkSendProgress.total}...
+                      </div>
+                    )
+                  }
+                  if (prets > 0) {
+                    return (
+                      <button onClick={envoyerToutesLesRelances}
+                        style={{padding: '8px 16px', borderRadius: 8, border: 'none', background: '#5BC78A', color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: 'pointer'}}>
+                        📤 Envoyer toutes les relances ({prets})
+                      </button>
+                    )
+                  }
+                  return null
+                })()}
+                <button onClick={fermerModalRelances} disabled={!!bulkGenProgress || !!bulkSendProgress}
+                  style={{padding: '8px 16px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.7)', fontSize: 12, fontWeight: 700, cursor: (bulkGenProgress || bulkSendProgress) ? 'not-allowed' : 'pointer', opacity: (bulkGenProgress || bulkSendProgress) ? 0.4 : 1}}>
+                  Fermer
+                </button>
+              </div>
             </div>
 
           </div>
