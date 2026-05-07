@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 const PLATFORMS = ['linkedin', 'facebook', 'discord', 'youtube']
 
 const DEFAULT_CONFIG = {
-  nom: '', activite: '', audience: '', ton: 'professionnel',
+  nom: '', activite: '', audience: '', ton: 'professionnel', ton_custom: '',
   mots_inclure: '', mots_exclure: '', bio_publique: '', bio_privee: '',
   prompt_linkedin: '', prompt_facebook: '', prompt_discord: '', prompt_youtube: '',
   contexte_global: '',
@@ -116,6 +116,19 @@ export default function PagePersonnalisation({ project }) {
                   </button>
                 ))}
               </div>
+              <div style={{ marginBottom:14 }}>
+                <label style={{ fontSize:11, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:6 }}>
+                  ✏️ Ton sur-mesure (optionnel — remplace le ton choisi ci-dessus)
+                </label>
+                <textarea value={config.ton_custom} onChange={e => update('ton_custom', e.target.value)}
+                  placeholder="Ex: Sec et factuel, comme un comptable allemand. Pas d'emojis, phrases courtes."
+                  rows={2} style={{ ...iS, resize:'vertical' }}/>
+                {config.ton_custom && (
+                  <p style={{ fontSize:10, color:'#5BC78A', marginTop:6 }}>
+                    ✨ Ton sur-mesure actif — il prendra le pas sur le bouton sélectionné.
+                  </p>
+                )}
+              </div>
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:14 }}>
                 <div>
                   <label style={{ fontSize:11, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:6 }}>✅ Mots clés à utiliser</label>
@@ -192,7 +205,7 @@ export default function PagePersonnalisation({ project }) {
 Identité : ${config.nom||'(non renseigné)'}
 Entreprise / Chaîne : ${config.activite||'(non renseigné)'}
 Audience : ${config.audience||'(non renseigné)'}
-Ton : ${config.ton}
+Ton : ${config.ton_custom || config.ton}
 Mots clés : ${config.mots_inclure||'aucun'}
 Mots exclus : ${config.mots_exclure||'aucun'}
 

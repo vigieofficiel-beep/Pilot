@@ -153,7 +153,7 @@ function getProjectConfig(projectId, projectLabel) {
         nom: config.nom || projectLabel || projectId,
         activite: config.activite || 'Logiciel pour entrepreneurs solo',
         audience: config.audience || 'professionnels',
-        ton: config.ton || 'chaleureux mais professionnel',
+        ton: (config.ton_custom && config.ton_custom.trim()) || config.ton || 'chaleureux mais professionnel',
       }
     }
   } catch {}
