@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 const PLATFORMS = ['linkedin', 'facebook', 'discord', 'youtube']
 
 const DEFAULT_CONFIG = {
-  nom: '', activite: '', audience: '', ton: 'professionnel', ton_custom: '',
+  nom: '', activite: '', audience: '', ton: 'professionnel', ton_custom: '', stats_cle: [],
   mots_inclure: '', mots_exclure: '', bio_publique: '', bio_privee: '',
   prompt_linkedin: '', prompt_facebook: '', prompt_discord: '', prompt_youtube: '',
   contexte_global: '',
@@ -164,6 +164,50 @@ export default function PagePersonnalisation({ project }) {
                   rows={3} style={{ ...iS, resize:'vertical' }}/>
               </div>
             </div>
+
+            {/* ── STATISTIQUES CLÉS ── */}
+            <div style={{ background:'rgba(255,255,255,0.02)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:14, padding:20 }}>
+              <h3 style={{ fontSize:13, fontWeight:700, color:'#EDE8DB', marginBottom:8 }}>📊 Statistiques clés (vraies)</h3>
+              <p style={{ fontSize:11, color:'rgba(237,232,219,0.4)', marginBottom:14, lineHeight:1.5 }}>
+                ℹ️ L'IA pourra citer ces chiffres dans les messages de prospection et les relances. Elle n'inventera <strong>rien d'autre</strong>. Une stat par ligne.
+              </p>
+
+              <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                {(config.stats_cle || []).map((stat, idx) => (
+                  <div key={idx} style={{ display:'flex', gap:8, alignItems:'center' }}>
+                    <input
+                      value={stat}
+                      onChange={e => {
+                        const newStats = [...config.stats_cle]
+                        newStats[idx] = e.target.value
+                        update('stats_cle', newStats)
+                      }}
+                      placeholder="Ex: 5 early adopters depuis le lancement"
+                      style={{ ...iS, flex:1 }}
+                    />
+                    <button onClick={() => {
+                      const newStats = config.stats_cle.filter((_, i) => i !== idx)
+                      update('stats_cle', newStats)
+                    }}
+                      style={{ padding:'9px 12px', borderRadius:8, border:'1px solid rgba(199,91,78,0.3)', background:'rgba(199,91,78,0.08)', color:'#C75B4E', fontSize:14, cursor:'pointer', flexShrink:0 }}
+                      title="Supprimer cette stat">
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <button onClick={() => update('stats_cle', [...(config.stats_cle || []), ''])}
+                style={{ marginTop:12, padding:'9px 14px', borderRadius:8, border:`1px dashed ${project.color}50`, background:'transparent', color:project.color, fontSize:12, fontWeight:700, cursor:'pointer' }}>
+                + Ajouter une statistique
+              </button>
+
+              {(!config.stats_cle || config.stats_cle.length === 0) && (
+                <p style={{ fontSize:11, color:'rgba(237,232,219,0.3)', marginTop:12, fontStyle:'italic' }}>
+                  Aucune stat définie. L'IA évitera de citer des chiffres précis.
+                </p>
+              )}
+            </div>
           </div>
         )}
 
@@ -208,6 +252,11 @@ Audience : ${config.audience||'(non renseigné)'}
 Ton : ${config.ton_custom || config.ton}
 Mots clés : ${config.mots_inclure||'aucun'}
 Mots exclus : ${config.mots_exclure||'aucun'}
+
+Statistiques clés autorisées :
+${(config.stats_cle && config.stats_cle.length > 0)
+  ? config.stats_cle.filter(s => s && s.trim()).map(s => '- ' + s).join('\n')
+  : '(aucune — l\'IA évitera tout chiffre précis)'}
 
 Contexte global :
 ${config.contexte_global||'(non défini)'}

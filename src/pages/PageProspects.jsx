@@ -148,12 +148,17 @@ function getProjectConfig(projectId, projectLabel) {
     const stored = localStorage.getItem(`pilotage_config_${projectId}`)
     if (stored) {
       const config = JSON.parse(stored)
+      // Stats clés : on filtre les chaînes vides et on les normalise
+      const statsCle = Array.isArray(config.stats_cle)
+        ? config.stats_cle.filter(s => s && s.trim()).map(s => s.trim())
+        : []
       // Mappe les champs Pilot vers le format attendu par l'agent Rédacteur
       return {
         nom: config.nom || projectLabel || projectId,
         activite: config.activite || 'Logiciel pour entrepreneurs solo',
         audience: config.audience || 'professionnels',
         ton: (config.ton_custom && config.ton_custom.trim()) || config.ton || 'chaleureux mais professionnel',
+        stats_cle: statsCle,
       }
     }
   } catch {}
@@ -163,6 +168,7 @@ function getProjectConfig(projectId, projectLabel) {
     activite: 'Logiciel pour entrepreneurs solo',
     audience: 'professionnels',
     ton: 'chaleureux mais professionnel',
+    stats_cle: [],
   }
 }
 
