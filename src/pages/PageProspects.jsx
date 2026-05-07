@@ -236,14 +236,16 @@ async function envoyerEmailViaAgent({ prospectId, sujet, message }) {
 
 /**
  * PHASE 3 — Récupère la liste des prospects éligibles à une relance.
+ * project_id optionnel : filtre côté backend par projet.
  */
-async function fetchRelancesEligibles(delayDays = 7) {
+async function fetchRelancesEligibles(delayDays = 7, projectId = null) {
   const apiKey = getAgentsApiKey()
   if (!apiKey) {
     throw new Error('Clé API Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
   }
 
-  const res = await fetch(`${AGENTS_API_URL}/relance/eligibles?delay_days=${delayDays}`, {
+  const projectParam = projectId ? `&project_id=${encodeURIComponent(projectId)}` : ''
+  const res = await fetch(`${AGENTS_API_URL}/relance/eligibles?delay_days=${delayDays}${projectParam}`, {
     method: 'GET',
     headers: { 'X-API-Key': apiKey },
   })
@@ -497,21 +499,21 @@ export default function PageProspects({ project }) {
   const [enrichSaving,  setEnrichSaving]  = useState(false)
 
   // --- États génération message IA ---
-  const [iaMessage,     setIaMessage]     = useState(null)  // { sujet, message, prospect_nom, generated_at, tokens_used }
+  const [iaMessage,     setIaMessage]     = useState(null)
   const [iaGenerating,  setIaGenerating]  = useState(false)
-  const [iaCopied,      setIaCopied]      = useState(null)  // 'sujet' | 'message' | null
+  const [iaCopied,      setIaCopied]      = useState(null)
 
   // --- États envoi email IA ---
   const [iaSending,     setIaSending]     = useState(false)
 
   // --- États tracking events Resend (Phase 2B) ---
-  const [iaEvents,      setIaEvents]      = useState([])  // [{event_type, created_at}, ...]
+  const [iaEvents,      setIaEvents]      = useState([])
 
   // --- États modal Relances (Phase 3) ---
   const [relancesModalOpen, setRelancesModalOpen] = useState(false)
-  const [relancesEligibles, setRelancesEligibles] = useState([])  // liste depuis /relance/eligibles
+  const [relancesEligibles, setRelancesEligibles] = useState([])
   const [relancesLoading,   setRelancesLoading]   = useState(false)
-  const [relanceMessages,   setRelanceMessages]   = useState({})  // { prospectId: { sujet, message, generating, sent, error } }
+  const [relanceMessages,   setRelanceMessages]   = useState({})
   const [relanceDelayDays,  setRelanceDelayDays]  = useState(7)
 
   const csvRef = useRef(null)
@@ -521,13 +523,13 @@ export default function PageProspects({ project }) {
     setTimeout(() => setMsg(null), duration)
   }
 
-  // --- Chargement initial ---
+  // --- Chargement initial (filtre par projet actif) ---
   const fetchAll = useCallback(async () => {
     setLoading(true)
     try {
       const [p, s] = await Promise.all([
-        apiGet('/prospects?order=created_at.desc&limit=500'),
-        apiGet('/sessions?order=created_at.desc&limit=50'),
+        apiGet(`/prospects?projet_id=eq.${project.id}&order=created_at.desc&limit=500`),
+        apiGet(`/sessions?projet_id=eq.${project.id}&order=created_at.desc&limit=50`),
       ])
       setProspects(p)
       setSessions(s)
@@ -535,9 +537,10 @@ export default function PageProspects({ project }) {
       showMsg(`❌ Erreur chargement : ${err.message}`, 5000)
     }
     setLoading(false)
-  }, [])
+  }, [project.id])
 
-  useEffect(() => { fetchAll() }, [fetchAll])
+  // Recharge à chaque changement de projet actif
+  useEffect(() => { fetchAll() }, [fetchAll, project.id])
 
   // --- Quand un prospect est sélectionné, on initialise les champs enrichissement + on charge un message éventuellement déjà généré ---
   useEffect(() => {
@@ -547,7 +550,6 @@ export default function PageProspects({ project }) {
         telephone: selected.telephone || '',
         site_web: selected.site_web || '',
       })
-      // Si un email a déjà été envoyé, on charge sujet+message depuis la base (priorité sur le local)
       if (selected.email_envoye_le && selected.email_sujet) {
         setIaMessage({
           sujet: selected.email_sujet,
@@ -556,13 +558,11 @@ export default function PageProspects({ project }) {
           tokens_used: null,
         })
       } else {
-        // Sinon : charger le message stocké en local (s'il existe)
         const stored = getStoredMessage(selected.id)
         setIaMessage(stored)
       }
       setIaCopied(null)
 
-      // Charger les events Resend (tracking) si email envoyé
       if (selected.email_resend_id) {
         fetchEmailEvents(selected.email_resend_id).then(setIaEvents)
       } else {
@@ -618,7 +618,7 @@ export default function PageProspects({ project }) {
 
     setProspects(curr => curr.filter(p => p.id !== id))
     if (selected?.id === id) setSelected(null)
-    deleteStoredMessage(id)  // nettoie aussi le message stocké
+    deleteStoredMessage(id)
 
     try {
       await apiDelete(`/prospects?id=eq.${id}`)
@@ -658,7 +658,7 @@ export default function PageProspects({ project }) {
     })
   }
 
-  // --- Recherche auto via n8n ---
+  // --- Recherche auto via n8n (envoie project_id) ---
   const lancerAutoRecherche = async () => {
     if (!autoSecteur || !autoDept) {
       showMsg('⚠️ Choisis un secteur ET un département.', 2500)
@@ -673,6 +673,7 @@ export default function PageProspects({ project }) {
         body: JSON.stringify({
           secteur: secteurLabel.toLowerCase(),
           departement: autoDept,
+          project_id: project.id,
         })
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -697,7 +698,7 @@ export default function PageProspects({ project }) {
     setAutoSearching(false)
   }
 
-  // --- Import CSV ---
+  // --- Import CSV (rattache au projet actif) ---
   const handleCSV = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -722,6 +723,7 @@ export default function PageProspects({ project }) {
             site_web: row.site_web || row.site || null,
             source: row.source || 'csv',
             score_qualite: parseInt(row.score_qualite) || null,
+            projet_id: project.id,
           })
           if (result.duplicate) doublons++
           else nouveaux++
@@ -740,7 +742,6 @@ export default function PageProspects({ project }) {
 
   // --- ENRICHISSEMENT MANUEL ---
 
-  // Ouvre Google dans BrowserWindow Electron avec recherche pré-remplie
   const ouvrirRechercheManuelle = (prospect) => {
     if (!prospect) return
     const query = `"${prospect.nom_entreprise}" ${prospect.ville || ''} contact email`
@@ -749,12 +750,10 @@ export default function PageProspects({ project }) {
     if (window.electronAPI && window.electronAPI.openSearchWindow) {
       window.electronAPI.openSearchWindow(url, prospect.id)
     } else {
-      // Fallback navigateur si pas dans Electron (mode dev web pur)
       window.open(url, '_blank')
     }
   }
 
-  // Sauvegarde des champs enrichis en base
   const sauvegarderEnrichissement = async () => {
     if (!selected) return
     setEnrichSaving(true)
@@ -770,7 +769,6 @@ export default function PageProspects({ project }) {
         return
       }
 
-      // Si on a maintenant un email mais que email_introuvable était à true, on remet à false
       if (updates.email) {
         updates.email_introuvable = false
       }
@@ -778,7 +776,6 @@ export default function PageProspects({ project }) {
       const result = await apiPatch(`/prospects?id=eq.${selected.id}`, updates)
       const updated = Array.isArray(result) ? result[0] : result
 
-      // Mise à jour de l'UI
       setProspects(curr => curr.map(p => p.id === selected.id ? { ...p, ...updates } : p))
       setSelected(prev => ({ ...prev, ...updates }))
       showMsg(`✅ Contact enrichi pour ${selected.nom_entreprise}`, 3000)
@@ -793,14 +790,12 @@ export default function PageProspects({ project }) {
   const lancerGenerationIA = async () => {
     if (!selected) return
 
-    // Vérification clé API présente
     const apiKey = getAgentsApiKey()
     if (!apiKey) {
       showMsg('❌ Clé Agents Doppler introuvable dans le Coffre-fort. Ajoute un compte nommé "Agents Doppler API" avec ta clé.', 6000)
       return
     }
 
-    // Détection email manquant
     const hasEmail = selected.email && !selected.email_introuvable
     if (!hasEmail) {
       const ok = confirm(
@@ -840,7 +835,6 @@ export default function PageProspects({ project }) {
     setIaMessage(prev => {
       if (!prev) return prev
       const updated = { ...prev, [field]: value }
-      // Sauve automatiquement les modifs en local
       if (selected) saveStoredMessage(selected.id, updated)
       return updated
     })
@@ -865,7 +859,6 @@ export default function PageProspects({ project }) {
   const lancerEnvoiEmail = async () => {
     if (!selected || !iaMessage) return
 
-    // Vérifs avant envoi
     if (!selected.email || selected.email_introuvable) {
       showMsg('❌ Pas d\'email valide pour ce prospect', 4000)
       return
@@ -879,7 +872,6 @@ export default function PageProspects({ project }) {
       return
     }
 
-    // Confirmation utilisateur
     const ok = confirm(
       `Envoyer cet email à ${selected.nom_entreprise} ?\n\n` +
       `Destinataire : ${selected.email}\n` +
@@ -896,7 +888,6 @@ export default function PageProspects({ project }) {
         message: iaMessage.message,
       })
 
-      // Mise à jour locale du prospect avec les infos d'envoi
       const updates = {
         statut: 'contacte',
         contacte_le: result.envoye_le,
@@ -908,10 +899,8 @@ export default function PageProspects({ project }) {
       setProspects(curr => curr.map(p => p.id === selected.id ? { ...p, ...updates } : p))
       setSelected(prev => ({ ...prev, ...updates }))
 
-      // Mise à jour locale du iaMessage pour afficher le statut "envoyé"
       setIaMessage(prev => ({ ...prev, generated_at: result.envoye_le }))
 
-      // Le message en localStorage devient obsolète puisqu'il est maintenant en base
       deleteStoredMessage(selected.id)
 
       showMsg(`✅ Email envoyé à ${result.prospect_email}`, 5000)
@@ -926,7 +915,6 @@ export default function PageProspects({ project }) {
   const marquerCommeRepondu = async () => {
     if (!selected) return
     if (selected.a_repondu) {
-      // Toggle inverse : démarquer
       if (!confirm('Démarquer ce prospect comme ayant répondu ?')) return
     }
 
@@ -956,15 +944,12 @@ export default function PageProspects({ project }) {
 
   // --- MODAL RELANCES (Phase 3) ---
 
-  /**
-   * Ouvre la modal et charge la liste des prospects éligibles.
-   */
   const ouvrirModalRelances = async () => {
     setRelancesModalOpen(true)
     setRelancesLoading(true)
     setRelanceMessages({})
     try {
-      const result = await fetchRelancesEligibles(relanceDelayDays)
+      const result = await fetchRelancesEligibles(relanceDelayDays, project.id)
       setRelancesEligibles(result.prospects || [])
       if ((result.prospects || []).length === 0) {
         showMsg(`ℹ️ Aucun prospect éligible (envoi initial il y a >=${result.delay_days}j)`, 4000)
@@ -978,13 +963,12 @@ export default function PageProspects({ project }) {
 
   const fermerModalRelances = () => {
     setRelancesModalOpen(false)
-    // On garde les messages générés en mémoire au cas où l'utilisateur réouvre
   }
 
   const rechargerEligibles = async () => {
     setRelancesLoading(true)
     try {
-      const result = await fetchRelancesEligibles(relanceDelayDays)
+      const result = await fetchRelancesEligibles(relanceDelayDays, project.id)
       setRelancesEligibles(result.prospects || [])
     } catch (err) {
       showMsg(`❌ Erreur : ${err.message}`, 4000)
@@ -992,9 +976,6 @@ export default function PageProspects({ project }) {
     setRelancesLoading(false)
   }
 
-  /**
-   * Génère le message de relance pour un prospect (appelle l'IA).
-   */
   const genererRelancePourProspect = async (prospect) => {
     setRelanceMessages(prev => ({
       ...prev,
@@ -1002,7 +983,7 @@ export default function PageProspects({ project }) {
     }))
 
     try {
-      const projectConfig = getProjectConfig()
+      const projectConfig = getProjectConfig(project.id, project.label)
       const result = await genererRelanceIA({
         prospectId: prospect.id,
         projectConfig,
@@ -1029,9 +1010,6 @@ export default function PageProspects({ project }) {
     }
   }
 
-  /**
-   * Envoie la relance pour un prospect (avec confirmation).
-   */
   const envoyerRelancePourProspect = async (prospect) => {
     const msg = relanceMessages[prospect.id]
     if (!msg || !msg.sujet || !msg.message) {
@@ -1063,13 +1041,11 @@ export default function PageProspects({ project }) {
         message: msg.message,
       })
 
-      // Mark comme envoyé localement
       setRelanceMessages(prev => ({
         ...prev,
         [prospect.id]: { ...prev[prospect.id], sending: false, sent: true, sentAt: result.envoye_le }
       }))
 
-      // Update du prospect dans la liste principale
       const updates = {
         relance_envoyee_le: result.envoye_le,
         relance_resend_id: result.resend_id,
@@ -1088,9 +1064,6 @@ export default function PageProspects({ project }) {
     }
   }
 
-  /**
-   * Met à jour le sujet ou message éditable de la relance d'un prospect.
-   */
   const updateRelanceField = (prospectId, field, value) => {
     setRelanceMessages(prev => ({
       ...prev,
@@ -1098,9 +1071,6 @@ export default function PageProspects({ project }) {
     }))
   }
 
-  /**
-   * Skip un prospect (le retire de la liste affichée pour cette session).
-   */
   const skipProspect = (prospectId) => {
     setRelancesEligibles(curr => curr.filter(p => p.id !== prospectId))
     showMsg('⏭️ Prospect ignoré pour cette session', 2000)
@@ -1146,7 +1116,6 @@ export default function PageProspects({ project }) {
         </div>
 
         <div style={{display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginLeft: 'auto'}}>
-          {/* Bouton Lancer les relances (Phase 3) */}
           <button onClick={ouvrirModalRelances}
             style={{padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(168,91,199,0.4)', background: 'rgba(168,91,199,0.08)', color: '#A85BC7', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap'}}>
             📬 Lancer les relances du jour
@@ -1367,7 +1336,6 @@ export default function PageProspects({ project }) {
           <div onClick={e => e.stopPropagation()}
             style={{width: 560, maxWidth: '95%', height: '100%', background: '#0D1B2A', borderLeft: `1px solid ${project.color}30`, padding: 24, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 16}}>
 
-            {/* Header */}
             <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12}}>
               <div>
                 <h2 style={{fontSize: 18, fontWeight: 800, color: '#EDE8DB', margin: '0 0 4px'}}>{selected.nom_entreprise}</h2>
@@ -1376,7 +1344,6 @@ export default function PageProspects({ project }) {
               <button onClick={() => setSelected(null)} style={{background: 'transparent', border: 'none', color: 'rgba(237,232,219,0.5)', fontSize: 20, cursor: 'pointer'}}>✕</button>
             </div>
 
-            {/* Métadonnées */}
             <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8}}>
               <div style={{padding: '8px 12px', borderRadius: 8, background: 'rgba(255,255,255,0.03)'}}>
                 <p style={{fontSize: 10, color: 'rgba(237,232,219,0.4)', margin: '0 0 2px'}}>SIRET</p>
@@ -1400,7 +1367,6 @@ export default function PageProspects({ project }) {
               )}
             </div>
 
-            {/* SECTION ENRICHISSEMENT MANUEL */}
             <div style={{padding: '16px', borderRadius: 12, background: `${project.color}08`, border: `1px solid ${project.color}20`, display: 'flex', flexDirection: 'column', gap: 12}}>
               <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8}}>
                 <p style={{fontSize: 12, fontWeight: 700, color: project.color, margin: 0}}>🔍 Enrichir le contact</p>
@@ -1434,7 +1400,6 @@ export default function PageProspects({ project }) {
               </button>
             </div>
 
-            {/* SECTION GÉNÉRATION MESSAGE IA */}
             <div style={{padding: '16px', borderRadius: 12, background: 'rgba(168,91,199,0.08)', border: '1px solid rgba(168,91,199,0.25)', display: 'flex', flexDirection: 'column', gap: 12}}>
               <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8}}>
                 <p style={{fontSize: 12, fontWeight: 700, color: '#A85BC7', margin: 0}}>
@@ -1457,7 +1422,6 @@ export default function PageProspects({ project }) {
                 </button>
               ) : (
                 <>
-                  {/* Sujet (éditable si pas encore envoyé, lecture seule sinon) */}
                   <div>
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3}}>
                       <label style={{fontSize: 10, color: 'rgba(237,232,219,0.4)'}}>Sujet</label>
@@ -1471,7 +1435,6 @@ export default function PageProspects({ project }) {
                       style={{...iS, opacity: selected.email_envoye_le ? 0.7 : 1, cursor: selected.email_envoye_le ? 'default' : 'text'}}/>
                   </div>
 
-                  {/* Message (éditable si pas encore envoyé, lecture seule sinon) */}
                   <div>
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3}}>
                       <label style={{fontSize: 10, color: 'rgba(237,232,219,0.4)'}}>Corps du message</label>
@@ -1485,9 +1448,7 @@ export default function PageProspects({ project }) {
                       rows={8} style={{...iS, resize: 'vertical', fontFamily: "'Nunito Sans',sans-serif", lineHeight: 1.5, opacity: selected.email_envoye_le ? 0.7 : 1, cursor: selected.email_envoye_le ? 'default' : 'text'}}/>
                   </div>
 
-                  {/* Boutons d'action */}
                   {selected.email_envoye_le ? (
-                    /* Email déjà envoyé : badge informatif + stats tracking */
                     <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
                       <div style={{padding: '10px 14px', borderRadius: 8, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.25)', display: 'flex', alignItems: 'center', gap: 8}}>
                         <span style={{fontSize: 14}}>✅</span>
@@ -1496,7 +1457,6 @@ export default function PageProspects({ project }) {
                         </span>
                       </div>
 
-                      {/* Résumé tracking Resend */}
                       {(() => {
                         const summary = summarizeEmailEvents(iaEvents)
                         if (!summary) {
@@ -1506,7 +1466,6 @@ export default function PageProspects({ project }) {
                             </div>
                           )
                         }
-                        // Cas bounce ou plainte spam
                         if (summary.bounced || summary.complained) {
                           return (
                             <div style={{padding: '8px 14px', borderRadius: 8, background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.25)', fontSize: 11, color: '#C75B4E', display: 'flex', alignItems: 'center', gap: 6}}>
@@ -1519,7 +1478,6 @@ export default function PageProspects({ project }) {
                             </div>
                           )
                         }
-                        // Cas normal : delivered + opens + clicks
                         const parts = []
                         if (summary.delivered) parts.push('📬 Délivré')
                         if (summary.opens > 0) {
@@ -1541,7 +1499,6 @@ export default function PageProspects({ project }) {
                         )
                       })()}
 
-                      {/* Bouton A répondu / badge si déjà marqué (Phase 3) */}
                       {selected.a_repondu ? (
                         <div onClick={marquerCommeRepondu} title="Cliquer pour démarquer"
                           style={{padding: '8px 14px', borderRadius: 8, background: 'rgba(168,91,199,0.1)', border: '1px solid rgba(168,91,199,0.3)', fontSize: 11, color: '#C39BD3', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer'}}>
@@ -1558,9 +1515,7 @@ export default function PageProspects({ project }) {
                       )}
                     </div>
                   ) : (
-                    /* Email pas encore envoyé : Régénérer + Envoyer + Supprimer */
                     <div style={{display: 'flex', flexDirection: 'column', gap: 8}}>
-                      {/* Bouton Envoyer (vert, pleine largeur) — visible seulement si email présent */}
                       {selected.email && !selected.email_introuvable ? (
                         <button onClick={lancerEnvoiEmail} disabled={iaSending || iaGenerating}
                           style={{padding: '12px 14px', borderRadius: 8, border: 'none', background: '#5BC78A', color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: (iaSending || iaGenerating) ? 'not-allowed' : 'pointer', opacity: (iaSending || iaGenerating) ? 0.6 : 1}}>
@@ -1572,7 +1527,6 @@ export default function PageProspects({ project }) {
                         </div>
                       )}
 
-                      {/* Régénérer + Supprimer */}
                       <div style={{display: 'flex', gap: 8}}>
                         <button onClick={lancerGenerationIA} disabled={iaGenerating || iaSending}
                           style={{flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid rgba(168,91,199,0.4)', background: 'rgba(168,91,199,0.1)', color: '#A85BC7', fontSize: 11, fontWeight: 700, cursor: (iaGenerating || iaSending) ? 'not-allowed' : 'pointer', opacity: (iaGenerating || iaSending) ? 0.6 : 1}}>
@@ -1589,7 +1543,6 @@ export default function PageProspects({ project }) {
               )}
             </div>
 
-            {/* Sources externes */}
             <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
               <p style={{fontSize: 11, color: 'rgba(237,232,219,0.4)', margin: 0}}>Sources externes</p>
               <a href={lienAnnuaire(selected.siren)} target="_blank" rel="noopener noreferrer"
@@ -1605,7 +1558,6 @@ export default function PageProspects({ project }) {
               </div>
             )}
 
-            {/* Actions footer */}
             <div style={{marginTop: 'auto', display: 'flex', gap: 8}}>
               <button onClick={() => supprimer(selected.id)}
                 style={{padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(199,91,78,0.4)', background: 'rgba(199,91,78,0.08)', color: '#C75B4E', fontSize: 12, fontWeight: 700, cursor: 'pointer'}}>
@@ -1623,12 +1575,11 @@ export default function PageProspects({ project }) {
           <div onClick={e => e.stopPropagation()}
             style={{background: '#0D1B2A', border: '1px solid rgba(168,91,199,0.3)', borderRadius: 16, width: '100%', maxWidth: 1100, maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden'}}>
 
-            {/* Header de la modal */}
             <div style={{padding: '20px 24px', borderBottom: '1px solid rgba(255,255,255,0.07)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0}}>
               <div>
                 <h2 style={{fontSize: 18, fontWeight: 800, color: '#A85BC7', margin: 0, fontFamily: 'Georgia, serif'}}>📬 Relances du jour</h2>
                 <p style={{fontSize: 12, color: 'rgba(237,232,219,0.5)', margin: '4px 0 0'}}>
-                  Prospects contactés il y a ≥ {relanceDelayDays}j sans réponse
+                  Prospects de <strong style={{color: project.color}}>{project.label}</strong> contactés il y a ≥ {relanceDelayDays}j sans réponse
                 </p>
               </div>
               <div style={{display: 'flex', gap: 10, alignItems: 'center'}}>
@@ -1647,7 +1598,6 @@ export default function PageProspects({ project }) {
               </div>
             </div>
 
-            {/* Body scrollable */}
             <div style={{flex: 1, overflowY: 'auto', padding: 24, display: 'flex', flexDirection: 'column', gap: 16}}>
               {relancesLoading ? (
                 <div style={{textAlign: 'center', color: 'rgba(237,232,219,0.5)', padding: 40}}>
@@ -1680,7 +1630,6 @@ export default function PageProspects({ project }) {
                         border: `1px solid ${isSent ? 'rgba(91,199,138,0.3)' : 'rgba(168,91,199,0.2)'}`,
                         borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10,
                       }}>
-                        {/* Header card : nom + métadonnées + skip */}
                         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12}}>
                           <div style={{flex: 1, minWidth: 0}}>
                             <p style={{fontSize: 14, fontWeight: 700, color: '#EDE8DB', margin: '0 0 4px'}}>{p.nom_entreprise}</p>
@@ -1699,7 +1648,6 @@ export default function PageProspects({ project }) {
                           )}
                         </div>
 
-                        {/* 1er email envoyé : sujet seulement (replié) */}
                         <details style={{fontSize: 11}}>
                           <summary style={{color: 'rgba(237,232,219,0.45)', cursor: 'pointer', userSelect: 'none', padding: '4px 0'}}>
                             📜 1er email envoyé : "{p.email_sujet}" — voir contenu
@@ -1709,7 +1657,6 @@ export default function PageProspects({ project }) {
                           </div>
                         </details>
 
-                        {/* Zone de génération / édition relance */}
                         {!hasMessage && !isGenerating ? (
                           <button onClick={() => genererRelancePourProspect(p)}
                             style={{padding: '10px 14px', borderRadius: 8, border: 'none', background: '#A85BC7', color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: 'pointer', alignSelf: 'flex-start'}}>
@@ -1739,7 +1686,6 @@ export default function PageProspects({ project }) {
                               </div>
                             )}
 
-                            {/* Boutons d'action */}
                             {isSent ? (
                               <div style={{padding: '8px 12px', borderRadius: 6, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.25)', fontSize: 11, color: '#5BC78A', fontWeight: 600}}>
                                 ✅ Relance envoyée à {p.email}
@@ -1771,7 +1717,6 @@ export default function PageProspects({ project }) {
               )}
             </div>
 
-            {/* Footer */}
             <div style={{padding: '14px 24px', borderTop: '1px solid rgba(255,255,255,0.07)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0, fontSize: 11, color: 'rgba(237,232,219,0.5)'}}>
               <span>
                 {Object.values(relanceMessages).filter(m => m.sent).length} envoyée(s) sur cette session
