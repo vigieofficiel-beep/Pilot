@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 
 const STUDIA_COLOR = '#7F77DD'
+const AGENTS_API_URL = 'https://agents.vigie-officiel.com'
 
 const TABS = [
   { id: 'voix',    label: 'Clone IA voix',       emoji: '🎙️', subtitle: 'Cloner ta voix et générer des audios' },
@@ -48,11 +49,11 @@ const STYLES_SHORT = [
 ]
 
 const PHASES_VIDEO = [
-  { id: 'script',  label: 'Génération du script', emoji: '✍️',  duration: 1500 },
-  { id: 'voice',   label: 'Synthèse de la voix-off', emoji: '🎙️', duration: 2000 },
-  { id: 'visuals', label: 'Création des visuels', emoji: '🎨',  duration: 2500 },
-  { id: 'edit',    label: 'Assemblage et montage', emoji: '✂️',  duration: 1800 },
-  { id: 'render',  label: 'Finalisation',          emoji: '🎬',  duration: 1200 },
+  { id: 'script',  label: 'Génération du script',     emoji: '✍️', mockMs: 0,    real: true  },
+  { id: 'voice',   label: 'Synthèse de la voix-off',  emoji: '🎙️', mockMs: 2000, real: false },
+  { id: 'visuals', label: 'Création des visuels',     emoji: '🎨', mockMs: 2500, real: false },
+  { id: 'edit',    label: 'Assemblage et montage',    emoji: '✂️', mockMs: 1800, real: false },
+  { id: 'render',  label: 'Finalisation',             emoji: '🎬', mockMs: 1200, real: false },
 ]
 
 const iS = {
@@ -68,6 +69,109 @@ function fmtTime(sec) {
   const s = Math.floor(sec % 60)
   return `${m}:${s.toString().padStart(2, '0')}`
 }
+
+// ============================================
+// HELPERS API AGENTS DOPPLER (Stud'IA)
+// ============================================
+
+/**
+ * Récupère la clé X-API-Key Agents Doppler depuis le Coffre-fort Pilot.
+ * Identique au pattern utilisé dans PageProspects.
+ */
+function getAgentsApiKey() {
+  try {
+    const vault = JSON.parse(localStorage.getItem('pilotage_vault') || '[]')
+    const compte = vault.find(c =>
+      c.nom && c.nom.toLowerCase().includes('agents doppler') && c.api_key
+    )
+    return compte?.api_key || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Génère un script vidéo via Claude API.
+ */
+async function genererScriptIA({ projectId, titre, sujet, dureeCibleMin, style, bRoll, voixName }) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) {
+    throw new Error('Clé Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
+  }
+
+  const res = await fetch(`${AGENTS_API_URL}/studia/script/generer`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey,
+    },
+    body: JSON.stringify({
+      project_id: projectId,
+      titre,
+      sujet,
+      duree_cible_min: dureeCibleMin,
+      style,
+      b_roll: bRoll,
+      voix_name: voixName || null,
+    }),
+  })
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const errJson = await res.json()
+      detail = errJson.detail || detail
+    } catch {}
+    throw new Error(detail)
+  }
+
+  return res.json()
+}
+
+/**
+ * Liste les scripts existants pour un projet.
+ */
+async function listScriptsIA(projectId) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) return { scripts: [], count: 0 }
+
+  try {
+    const res = await fetch(
+      `${AGENTS_API_URL}/studia/script/list?project_id=${encodeURIComponent(projectId)}`,
+      { headers: { 'X-API-Key': apiKey } }
+    )
+    if (!res.ok) return { scripts: [], count: 0 }
+    return res.json()
+  } catch {
+    return { scripts: [], count: 0 }
+  }
+}
+
+/**
+ * Supprime un script du backend.
+ */
+async function deleteScriptIA(scriptId) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) throw new Error('Clé Agents Doppler introuvable')
+
+  const res = await fetch(`${AGENTS_API_URL}/studia/script/${scriptId}`, {
+    method: 'DELETE',
+    headers: { 'X-API-Key': apiKey },
+  })
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const errJson = await res.json()
+      detail = errJson.detail || detail
+    } catch {}
+    throw new Error(detail)
+  }
+  return res.json()
+}
+
+// ============================================
+// HELPERS GÉNÉRATION MOCKS (audio/image/vidéo)
+// ============================================
 
 function generateSilentWav(durationSec) {
   const sampleRate = 22050
@@ -115,7 +219,6 @@ function generateMockImageSvg(style, format, prompt, seed) {
   return 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)))
 }
 
-// Génère une "vidéo" mockée via Canvas → MediaRecorder. Renvoie un Blob URL.
 async function generateMockVideo(durationSec, ratio, label, projectColor, seed = 1) {
   return new Promise((resolve, reject) => {
     const w = ratio >= 1 ? 640 : 360
@@ -123,7 +226,6 @@ async function generateMockVideo(durationSec, ratio, label, projectColor, seed =
     const canvas = document.createElement('canvas')
     canvas.width = w; canvas.height = h
     const ctx = canvas.getContext('2d')
-
     const stream = canvas.captureStream(30)
     const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' })
     const chunks = []
@@ -133,18 +235,12 @@ async function generateMockVideo(durationSec, ratio, label, projectColor, seed =
       resolve(URL.createObjectURL(blob))
     }
     recorder.onerror = reject
-
     const startTime = performance.now()
     const totalMs = durationSec * 1000
-
     const draw = () => {
       const elapsed = performance.now() - startTime
       const t = elapsed / totalMs
-      if (elapsed >= totalMs) {
-        recorder.stop()
-        return
-      }
-      // Dégradé animé
+      if (elapsed >= totalMs) { recorder.stop(); return }
       const grad = ctx.createLinearGradient(0, 0, w, h)
       const phase = (elapsed / 1000) + seed
       const r1 = Math.floor(40 + 30 * Math.sin(phase * 0.5))
@@ -152,42 +248,26 @@ async function generateMockVideo(durationSec, ratio, label, projectColor, seed =
       const b1 = Math.floor(80 + 40 * Math.sin(phase * 0.3))
       grad.addColorStop(0, `rgb(${r1},${g1},${b1})`)
       grad.addColorStop(1, projectColor)
-      ctx.fillStyle = grad
-      ctx.fillRect(0, 0, w, h)
-
-      // Cercles flottants
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h)
       for (let i = 0; i < 6; i++) {
         const cx = (Math.sin(phase * 0.3 + i) * 0.5 + 0.5) * w
         const cy = (Math.cos(phase * 0.4 + i * 1.3) * 0.5 + 0.5) * h
         const r = 30 + 20 * Math.sin(phase + i)
         ctx.fillStyle = `rgba(255,255,255,${0.05 + 0.05 * Math.sin(phase + i * 2)})`
-        ctx.beginPath()
-        ctx.arc(cx, cy, r, 0, Math.PI * 2)
-        ctx.fill()
+        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill()
       }
-
-      // Label central
       ctx.fillStyle = 'rgba(237,232,219,0.9)'
       ctx.font = `bold ${Math.floor(h/14)}px Georgia`
       ctx.textAlign = 'center'
       ctx.fillText(label, w / 2, h / 2)
-
-      // Timestamp
       ctx.fillStyle = 'rgba(237,232,219,0.5)'
       ctx.font = `${Math.floor(h/30)}px monospace`
       ctx.fillText(`${fmtTime(elapsed/1000)} / ${fmtTime(durationSec)}`, w / 2, h / 2 + Math.floor(h/12))
-
-      // Barre progress
-      ctx.fillStyle = 'rgba(255,255,255,0.1)'
-      ctx.fillRect(20, h - 30, w - 40, 4)
-      ctx.fillStyle = '#7F77DD'
-      ctx.fillRect(20, h - 30, (w - 40) * t, 4)
-
+      ctx.fillStyle = 'rgba(255,255,255,0.1)'; ctx.fillRect(20, h - 30, w - 40, 4)
+      ctx.fillStyle = '#7F77DD'; ctx.fillRect(20, h - 30, (w - 40) * t, 4)
       requestAnimationFrame(draw)
     }
-
-    recorder.start()
-    draw()
+    recorder.start(); draw()
   })
 }
 
@@ -308,9 +388,7 @@ function RecordingModal({ onClose, onValidate }) {
         </div>
         {error && <div style={{ background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 12, color: '#C75B4E' }}>⚠️ {error}</div>}
         {step === 'idle' && (
-          <button onClick={startRecording} disabled={!name.trim()} style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: name.trim() ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 14, fontWeight: 800, cursor: name.trim() ? 'pointer' : 'not-allowed' }}>
-            ● Démarrer l'enregistrement
-          </button>
+          <button onClick={startRecording} disabled={!name.trim()} style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: name.trim() ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 14, fontWeight: 800, cursor: name.trim() ? 'pointer' : 'not-allowed' }}>● Démarrer l'enregistrement</button>
         )}
         {step === 'recording' && (
           <div>
@@ -686,83 +764,149 @@ function AnnotationModal({ timestamp, onSave, onClose }) {
   )
 }
 
-// ── ONGLET 3 : STUDIO CINÉMA ──────────────────────────────────────
+// ── ONGLET 3 : STUDIO CINÉMA (BACKEND-CONNECTED) ─────────────────
 function TabCinema({ project }) {
-  const videosKey = `pilotage_studia_videos_${project.id}`
   const annotationsKey = `pilotage_studia_annotations_${project.id}`
+  const sceneEditsKey = `pilotage_studia_scene_edits_${project.id}`
   const voixKey = `pilotage_studia_voix_${project.id}`
 
-  const [videos, setVideos] = useState(() => { try { return JSON.parse(localStorage.getItem(videosKey)) || [] } catch { return [] } })
+  const [scripts, setScripts] = useState([])  // Liste des scripts du projet (depuis backend)
+  const [loadingList, setLoadingList] = useState(false)
   const [annotations, setAnnotations] = useState(() => { try { return JSON.parse(localStorage.getItem(annotationsKey)) || {} } catch { return {} } })
+  const [sceneEdits, setSceneEdits] = useState(() => { try { return JSON.parse(localStorage.getItem(sceneEditsKey)) || {} } catch { return {} } })
   const [voixDispo, setVoixDispo] = useState([])
+  const [errorMsg, setErrorMsg] = useState(null)
+  const [successMsg, setSuccessMsg] = useState(null)
 
+  // Form
   const [titre, setTitre] = useState('')
   const [sujet, setSujet] = useState('')
   const [duree, setDuree] = useState(5)
   const [voixId, setVoixId] = useState('')
   const [styleVid, setStyleVid] = useState('documentaire')
   const [bRoll, setBRoll] = useState(true)
+
+  // Génération
   const [generating, setGenerating] = useState(false)
   const [genPhase, setGenPhase] = useState(0)
 
-  const [activeVideo, setActiveVideo] = useState(null)
+  // Lecture / annotations
+  const [activeScript, setActiveScript] = useState(null)
   const [videoUrl, setVideoUrl] = useState(null)
   const [showAnnotModal, setShowAnnotModal] = useState(false)
   const [pausedAt, setPausedAt] = useState(0)
   const videoRef = useRef(null)
 
+  // Charger la liste des scripts depuis backend au changement de projet
+  const refreshScripts = async () => {
+    setLoadingList(true)
+    try {
+      const result = await listScriptsIA(project.id)
+      setScripts(result.scripts || [])
+    } catch (err) {
+      console.error('Erreur chargement scripts:', err)
+      setScripts([])
+    }
+    setLoadingList(false)
+  }
+
   useEffect(() => {
-    try { setVideos(JSON.parse(localStorage.getItem(videosKey)) || []) } catch { setVideos([]) }
+    refreshScripts()
     try { setAnnotations(JSON.parse(localStorage.getItem(annotationsKey)) || {}) } catch { setAnnotations({}) }
+    try { setSceneEdits(JSON.parse(localStorage.getItem(sceneEditsKey)) || {}) } catch { setSceneEdits({}) }
     try {
       const v = JSON.parse(localStorage.getItem(voixKey)) || []
       setVoixDispo(v.filter(x => x.status === 'ready'))
     } catch { setVoixDispo([]) }
-    setActiveVideo(null); setVideoUrl(null)
+    setActiveScript(null); setVideoUrl(null)
   }, [project.id])
 
-  // Régénère la vidéo mockée quand on change de vidéo active
+  // Régénère la vidéo mockée quand on change de script actif
   useEffect(() => {
     let cancelled = false
-    if (activeVideo) {
+    if (activeScript) {
       setVideoUrl(null)
-      const seed = parseInt(activeVideo.id.slice(-6), 36) || 1
-      generateMockVideo(Math.min(activeVideo.duree * 60, 30), 16/9, activeVideo.titre, project.color || STUDIA_COLOR, seed)
+      const seed = parseInt(activeScript.id.replace(/-/g, '').slice(-6), 16) || 1
+      generateMockVideo(Math.min(activeScript.duree_cible_min * 60, 30), 16/9, activeScript.titre, project.color || STUDIA_COLOR, seed)
         .then(url => { if (!cancelled) setVideoUrl(url) })
         .catch(err => console.error('Erreur génération vidéo mock:', err))
     }
     return () => { cancelled = true; if (videoUrl) URL.revokeObjectURL(videoUrl) }
-  }, [activeVideo?.id])
+  }, [activeScript?.id])
 
-  const persistVideos = (v) => { localStorage.setItem(videosKey, JSON.stringify(v)); setVideos(v) }
   const persistAnnotations = (a) => { localStorage.setItem(annotationsKey, JSON.stringify(a)); setAnnotations(a) }
+  const persistSceneEdits = (e) => { localStorage.setItem(sceneEditsKey, JSON.stringify(e)); setSceneEdits(e) }
+
+  const showError = (msg, dur = 6000) => { setErrorMsg(msg); setTimeout(() => setErrorMsg(null), dur) }
+  const showSuccess = (msg, dur = 4000) => { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(null), dur) }
 
   const generer = async () => {
     if (!titre.trim() || !sujet.trim() || !voixId || generating) return
-    setGenerating(true); setGenPhase(0)
-    for (let i = 0; i < PHASES_VIDEO.length; i++) {
-      setGenPhase(i)
-      await new Promise(r => setTimeout(r, PHASES_VIDEO[i].duration))
+
+    const apiKey = getAgentsApiKey()
+    if (!apiKey) {
+      showError('Clé Agents Doppler introuvable dans le Coffre-fort. Ajoute un compte nommé "Agents Doppler API" avec ta clé.')
+      return
     }
-    const v = voixDispo.find(x => x.id === voixId)
-    const newVideo = {
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      titre: titre.trim(), sujet: sujet.trim(), duree, voixId, voixName: v?.name || '?',
-      styleVid, bRoll, createdAt: new Date().toISOString(),
+
+    if (sujet.trim().length < 10) {
+      showError('Le sujet doit faire au moins 10 caractères.')
+      return
     }
-    persistVideos([newVideo, ...videos].slice(0, 10))
-    setTitre(''); setSujet('')
-    setActiveVideo(newVideo)
+
+    setGenerating(true); setGenPhase(0); setErrorMsg(null); setSuccessMsg(null)
+
+    try {
+      // Phase 1 (réelle) — Génération du script via Claude API
+      setGenPhase(0)
+      const v = voixDispo.find(x => x.id === voixId)
+      const result = await genererScriptIA({
+        projectId: project.id,
+        titre: titre.trim(),
+        sujet: sujet.trim(),
+        dureeCibleMin: duree,
+        style: styleVid,
+        bRoll,
+        voixName: v?.name || null,
+      })
+
+      // Phases 2-5 (mockées en attendant agents voix/image/montage)
+      for (let i = 1; i < PHASES_VIDEO.length; i++) {
+        setGenPhase(i)
+        await new Promise(r => setTimeout(r, PHASES_VIDEO[i].mockMs))
+      }
+
+      // Recharger la liste depuis backend pour voir le nouveau script
+      await refreshScripts()
+
+      // Activer automatiquement le script fraîchement généré
+      setActiveScript(result)
+      setTitre(''); setSujet('')
+      showSuccess(`✨ Script généré (${result.scenes?.length || 0} scènes)`)
+    } catch (err) {
+      showError(`❌ Erreur génération : ${err.message}`)
+      console.error('Generate error:', err)
+    }
+
     setGenerating(false); setGenPhase(0)
   }
 
-  const supprimerVideo = (id) => {
-    if (!confirm('Supprimer cette vidéo et ses annotations ?')) return
-    persistVideos(videos.filter(v => v.id !== id))
-    const newAnnots = { ...annotations }
-    delete newAnnots[id]
-    persistAnnotations(newAnnots)
-    if (activeVideo?.id === id) { setActiveVideo(null); setVideoUrl(null) }
+  const supprimerScript = async (scriptId) => {
+    if (!confirm('Supprimer ce script et ses annotations ?')) return
+    try {
+      await deleteScriptIA(scriptId)
+      setScripts(prev => prev.filter(s => s.id !== scriptId))
+      const newAnnots = { ...annotations }
+      delete newAnnots[scriptId]
+      persistAnnotations(newAnnots)
+      const newEdits = { ...sceneEdits }
+      delete newEdits[scriptId]
+      persistSceneEdits(newEdits)
+      if (activeScript?.id === scriptId) { setActiveScript(null); setVideoUrl(null) }
+      showSuccess('🗑️ Script supprimé')
+    } catch (err) {
+      showError(`❌ Erreur suppression : ${err.message}`)
+    }
   }
 
   const ouvrirAnnotation = () => {
@@ -773,26 +917,26 @@ function TabCinema({ project }) {
   }
 
   const sauvegarderAnnotation = (comment) => {
-    if (!activeVideo) return
+    if (!activeScript) return
     const newAnnot = { id: Date.now().toString(), timestamp: pausedAt, comment, status: 'pending', createdAt: new Date().toISOString() }
-    const updated = { ...annotations, [activeVideo.id]: [...(annotations[activeVideo.id] || []), newAnnot].sort((a, b) => a.timestamp - b.timestamp) }
+    const updated = { ...annotations, [activeScript.id]: [...(annotations[activeScript.id] || []), newAnnot].sort((a, b) => a.timestamp - b.timestamp) }
     persistAnnotations(updated)
     setShowAnnotModal(false)
   }
 
   const supprimerAnnotation = (annotId) => {
-    if (!activeVideo) return
-    const updated = { ...annotations, [activeVideo.id]: (annotations[activeVideo.id] || []).filter(a => a.id !== annotId) }
+    if (!activeScript) return
+    const updated = { ...annotations, [activeScript.id]: (annotations[activeScript.id] || []).filter(a => a.id !== annotId) }
     persistAnnotations(updated)
   }
 
   const renvoyerEnCorrection = (annotId) => {
-    if (!activeVideo) return
-    const updated = { ...annotations, [activeVideo.id]: (annotations[activeVideo.id] || []).map(a => a.id === annotId ? { ...a, status: 'pending_fix' } : a) }
+    if (!activeScript) return
+    const updated = { ...annotations, [activeScript.id]: (annotations[activeScript.id] || []).map(a => a.id === annotId ? { ...a, status: 'pending_fix' } : a) }
     persistAnnotations(updated)
     setTimeout(() => {
       setAnnotations(prev => {
-        const final = { ...prev, [activeVideo.id]: (prev[activeVideo.id] || []).map(a => a.id === annotId ? { ...a, status: 'fixed' } : a) }
+        const final = { ...prev, [activeScript.id]: (prev[activeScript.id] || []).map(a => a.id === annotId ? { ...a, status: 'fixed' } : a) }
         localStorage.setItem(annotationsKey, JSON.stringify(final))
         return final
       })
@@ -806,12 +950,41 @@ function TabCinema({ project }) {
     }
   }
 
-  const currentAnnots = activeVideo ? (annotations[activeVideo.id] || []) : []
+  // Récupère les scènes du script actif, en fusionnant avec les éditions locales
+  const getScenesFromScript = (script) => {
+    if (!script || !script.scenes_json?.scenes) return script?.scenes || []
+    const baseScenes = script.scenes_json.scenes
+    const edits = sceneEdits[script.id] || {}
+    return baseScenes.map(s => ({ ...s, ...(edits[s.id] || {}) }))
+  }
+
+  const updateSceneVoixOff = (scriptId, sceneId, newText) => {
+    const newEdits = {
+      ...sceneEdits,
+      [scriptId]: { ...(sceneEdits[scriptId] || {}), [sceneId]: { ...(sceneEdits[scriptId]?.[sceneId] || {}), voix_off: newText } }
+    }
+    persistSceneEdits(newEdits)
+  }
+
+  const currentAnnots = activeScript ? (annotations[activeScript.id] || []) : []
+  const currentScenes = activeScript ? getScenesFromScript(activeScript) : []
   const peutGenerer = titre.trim() && sujet.trim() && voixId && !generating
 
   return (
     <>
       {showAnnotModal && <AnnotationModal timestamp={pausedAt} onSave={sauvegarderAnnotation} onClose={() => setShowAnnotModal(false)} />}
+
+      {/* Messages */}
+      {errorMsg && (
+        <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', fontSize: 12, color: '#C75B4E', marginBottom: 14 }}>
+          {errorMsg}
+        </div>
+      )}
+      {successMsg && (
+        <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.3)', fontSize: 12, color: '#5BC78A', marginBottom: 14 }}>
+          {successMsg}
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 20 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -835,7 +1008,7 @@ function TabCinema({ project }) {
             </div>
 
             <div style={{ marginBottom: 14 }}>
-              <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Sujet / Pitch *</label>
+              <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Sujet / Pitch * <span style={{ color: 'rgba(237,232,219,0.3)' }}>(min 10 caractères)</span></label>
               <textarea value={sujet} onChange={e => setSujet(e.target.value)} placeholder="Décris en 2-3 phrases le sujet de ta vidéo. L'agent script en fera une narration structurée." rows={3} style={{ ...iS, resize: 'vertical' }} disabled={generating} />
             </div>
 
@@ -875,23 +1048,33 @@ function TabCinema({ project }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
                   {PHASES_VIDEO.map((p, i) => (
                     <div key={p.id} style={{ flex: 1, textAlign: 'center', fontSize: 9, color: i <= genPhase ? STUDIA_COLOR : 'rgba(237,232,219,0.3)', fontWeight: i === genPhase ? 700 : 400 }}>
-                      {i < genPhase ? '✓' : i === genPhase ? '⏳' : '·'} {p.label.split(' ')[0]}
+                      {i < genPhase ? '✓' : i === genPhase ? (p.real ? '⏳' : '⚙️') : '·'} {p.label.split(' ')[0]}
                     </div>
                   ))}
                 </div>
                 <div style={{ height: 4, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
                   <div style={{ height: '100%', width: `${((genPhase + 1) / PHASES_VIDEO.length) * 100}%`, background: STUDIA_COLOR, transition: 'width 0.3s' }} />
                 </div>
+                {genPhase === 0 && (
+                  <p style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 8, textAlign: 'center', fontStyle: 'italic' }}>
+                    Claude rédige ton script structuré (15-30 secondes)...
+                  </p>
+                )}
+                {genPhase > 0 && (
+                  <p style={{ fontSize: 10, color: 'rgba(212,168,83,0.7)', marginTop: 8, textAlign: 'center', fontStyle: 'italic' }}>
+                    💡 Phases 2-5 simulées en attendant les agents voix/image/montage (Phases 3-7 backend)
+                  </p>
+                )}
               </div>
             )}
           </div>
 
           {/* Lecteur vidéo */}
           <div style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, overflow: 'hidden' }}>
-            {!activeVideo ? (
+            {!activeScript ? (
               <div style={{ aspectRatio: '16 / 9', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', gap: 8 }}>
                 <div style={{ fontSize: 36, opacity: 0.4 }}>🎬</div>
-                <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.4)', margin: 0 }}>Sélectionne une vidéo dans la liste à droite ou génère-en une nouvelle</p>
+                <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.4)', margin: 0 }}>Sélectionne un script dans la liste à droite ou génère-en un nouveau</p>
               </div>
             ) : (
               <>
@@ -909,9 +1092,9 @@ function TabCinema({ project }) {
                 </div>
                 <div style={{ padding: '14px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeVideo.titre}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeScript.titre}</div>
                     <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>
-                      {STYLES_VIDEO.find(s => s.val === activeVideo.styleVid)?.label} · 🎤 {activeVideo.voixName} · {activeVideo.duree} min cible
+                      {STYLES_VIDEO.find(s => s.val === activeScript.style)?.label} · 🎤 {activeScript.voix_name || '?'} · {activeScript.duree_cible_min} min cible · {currentScenes.length} scènes
                     </div>
                   </div>
                   <button onClick={ouvrirAnnotation} disabled={!videoUrl} style={{ padding: '8px 14px', borderRadius: 10, border: 'none', background: videoUrl ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 11, fontWeight: 800, cursor: videoUrl ? 'pointer' : 'not-allowed', flexShrink: 0 }}>📌 Annoter ici</button>
@@ -919,29 +1102,87 @@ function TabCinema({ project }) {
               </>
             )}
           </div>
+
+          {/* Script structuré (scènes) */}
+          {activeScript && currentScenes.length > 0 && (
+            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>📜 Script structuré</h3>
+                <span style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)' }}>
+                  {currentScenes.length} scènes · {fmtTime(currentScenes.reduce((acc, s) => acc + (s.duree_sec || 0), 0))} total
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {currentScenes.map(scene => {
+                  const typeColor = scene.type === 'intro' ? '#5BC78A' : scene.type === 'conclusion' ? '#D4A853' : STUDIA_COLOR
+                  const typeLabel = scene.type === 'intro' ? '🎬 Intro' : scene.type === 'conclusion' ? '🏁 Conclusion' : `📍 Scène ${scene.id}`
+                  return (
+                    <div key={scene.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 12 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: typeColor, padding: '3px 8px', borderRadius: 6, background: `${typeColor}15`, border: `1px solid ${typeColor}30` }}>
+                          {typeLabel}
+                        </span>
+                        <span style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', fontFamily: 'monospace' }}>{fmtTime(scene.duree_sec)}</span>
+                      </div>
+                      <div style={{ marginBottom: 8 }}>
+                        <label style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 4 }}>Voix-off (éditable)</label>
+                        <textarea
+                          value={scene.voix_off}
+                          onChange={e => updateSceneVoixOff(activeScript.id, scene.id, e.target.value)}
+                          rows={3}
+                          style={{ ...iS, fontSize: 12, resize: 'vertical', lineHeight: 1.5 }}
+                        />
+                      </div>
+                      <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 6, padding: '8px 10px', fontSize: 10, color: 'rgba(237,232,219,0.5)', fontStyle: 'italic', lineHeight: 1.5 }}>
+                        🎨 <strong>Visuel :</strong> {scene.visuel_prompt}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {activeScript.scenes_json?.metadata && (
+                <div style={{ marginTop: 14, padding: '10px 14px', background: 'rgba(127,119,221,0.05)', border: '1px solid rgba(127,119,221,0.15)', borderRadius: 8, fontSize: 11, color: 'rgba(237,232,219,0.6)' }}>
+                  <div style={{ marginBottom: 4 }}><strong style={{ color: STUDIA_COLOR }}>Ton :</strong> {activeScript.scenes_json.metadata.ton}</div>
+                  {activeScript.scenes_json.metadata.mots_cles?.length > 0 && (
+                    <div><strong style={{ color: STUDIA_COLOR }}>Mots-clés :</strong> {activeScript.scenes_json.metadata.mots_cles.join(', ')}</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* COLONNE DROITE */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-          {/* Liste vidéos */}
+          {/* Liste scripts (depuis backend) */}
           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 16 }}>
-            <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>Vidéos générées {videos.length > 0 && `(${videos.length})`}</h3>
-            {videos.length === 0 ? (
-              <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.3)', fontStyle: 'italic', textAlign: 'center', padding: 14 }}>Aucune vidéo encore</p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Scripts générés {scripts.length > 0 && `(${scripts.length})`}</h3>
+              <button onClick={refreshScripts} disabled={loadingList} style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(237,232,219,0.5)', fontSize: 10, cursor: loadingList ? 'not-allowed' : 'pointer' }}>
+                {loadingList ? '⏳' : '🔄'}
+              </button>
+            </div>
+            {loadingList && scripts.length === 0 ? (
+              <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', textAlign: 'center', padding: 14 }}>⏳ Chargement...</p>
+            ) : scripts.length === 0 ? (
+              <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.3)', fontStyle: 'italic', textAlign: 'center', padding: 14 }}>Aucun script encore</p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 220, overflowY: 'auto' }}>
-                {videos.map(v => {
-                  const isActive = activeVideo?.id === v.id
-                  const annotCount = (annotations[v.id] || []).length
+                {scripts.map(s => {
+                  const isActive = activeScript?.id === s.id
+                  const annotCount = (annotations[s.id] || []).length
+                  const sceneCount = s.scenes_json?.scenes?.length || 0
                   return (
-                    <div key={v.id} onClick={() => setActiveVideo(v)} style={{ background: isActive ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)', border: `1px solid ${isActive ? STUDIA_COLOR : 'rgba(255,255,255,0.06)'}`, borderRadius: 10, padding: 10, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                    <div key={s.id} onClick={() => setActiveScript(s)} style={{ background: isActive ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)', border: `1px solid ${isActive ? STUDIA_COLOR : 'rgba(255,255,255,0.06)'}`, borderRadius: 10, padding: 10, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: isActive ? STUDIA_COLOR : '#EDE8DB', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.titre}</div>
-                        <div style={{ fontSize: 9, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>{STYLES_VIDEO.find(s => s.val === v.styleVid)?.emoji} {v.duree} min · 🎤 {v.voixName}</div>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: isActive ? STUDIA_COLOR : '#EDE8DB', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.titre}</div>
+                        <div style={{ fontSize: 9, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>{STYLES_VIDEO.find(x => x.val === s.style)?.emoji} {s.duree_cible_min} min · 📜 {sceneCount} scènes</div>
                         {annotCount > 0 && <div style={{ fontSize: 9, color: '#D4A853', marginTop: 3 }}>📌 {annotCount} annotation{annotCount > 1 ? 's' : ''}</div>}
                       </div>
-                      <button onClick={(e) => { e.stopPropagation(); supprimerVideo(v.id) }} style={{ padding: '4px 6px', borderRadius: 6, border: 'none', background: 'transparent', color: 'rgba(237,232,219,0.3)', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}>✕</button>
+                      <button onClick={(e) => { e.stopPropagation(); supprimerScript(s.id) }} style={{ padding: '4px 6px', borderRadius: 6, border: 'none', background: 'transparent', color: 'rgba(237,232,219,0.3)', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}>✕</button>
                     </div>
                   )
                 })}
@@ -952,8 +1193,8 @@ function TabCinema({ project }) {
           {/* Annotations */}
           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 16 }}>
             <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>📌 Annotations {currentAnnots.length > 0 && `(${currentAnnots.length})`}</h3>
-            {!activeVideo ? (
-              <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.3)', fontStyle: 'italic', textAlign: 'center', padding: 14 }}>Sélectionne une vidéo</p>
+            {!activeScript ? (
+              <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.3)', fontStyle: 'italic', textAlign: 'center', padding: 14 }}>Sélectionne un script</p>
             ) : currentAnnots.length === 0 ? (
               <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.3)', fontStyle: 'italic', textAlign: 'center', padding: 14, lineHeight: 1.5 }}>Pause la vidéo et clique sur "📌 Annoter ici" pour ajouter une remarque.</p>
             ) : (
@@ -998,7 +1239,7 @@ function TabShorts({ project }) {
   const [sousTitres, setSousTitres] = useState(true)
   const [generating, setGenerating] = useState(false)
 
-  const [shortVideoUrls, setShortVideoUrls] = useState({}) // id → blob URL
+  const [shortVideoUrls, setShortVideoUrls] = useState({})
 
   useEffect(() => {
     try { setShorts(JSON.parse(localStorage.getItem(shortsKey)) || []) } catch { setShorts([]) }
@@ -1008,18 +1249,15 @@ function TabShorts({ project }) {
     } catch { setVoixDispo([]) }
   }, [project.id])
 
-  // Génère les blob URLs pour chaque short à l'affichage
   useEffect(() => {
     let cancelled = false
     const generateAll = async () => {
-      const newUrls = {}
       for (const s of shorts.slice(0, 6)) {
         if (cancelled) return
         const seed = parseInt(s.id.slice(-6), 36) || 1
         try {
           const url = await generateMockVideo(Math.min(s.duree, 8), 9/16, s.sujet.slice(0, 30), project.color || STUDIA_COLOR, seed)
           if (!cancelled) {
-            newUrls[s.id] = url
             setShortVideoUrls(prev => ({ ...prev, [s.id]: url }))
           }
         } catch (err) { console.error(err) }
@@ -1061,7 +1299,6 @@ function TabShorts({ project }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
         <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>⚡ Nouveau short (vertical 9:16)</h3>
-
         <div style={{ marginBottom: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
             <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Sujet du short *</label>
@@ -1069,7 +1306,6 @@ function TabShorts({ project }) {
           </div>
           <textarea value={sujet} onChange={e => setSujet(e.target.value.slice(0, 300))} placeholder="Ex: Comment l'extraterritorialité du droit US fonctionne en 60 secondes" rows={3} style={{ ...iS, resize: 'vertical' }} disabled={generating} />
         </div>
-
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
           <div>
             <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Voix narrative *</label>
@@ -1086,31 +1322,25 @@ function TabShorts({ project }) {
             <input type="range" min="30" max="120" step="10" value={dureeShort} onChange={e => setDureeShort(parseInt(e.target.value))} style={{ width: '100%', accentColor: STUDIA_COLOR }} disabled={generating} />
           </div>
         </div>
-
         <div style={{ marginBottom: 14 }}>
           <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Style visuel</label>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {STYLES_SHORT.map(s => <button key={s.val} onClick={() => setStyleS(s.val)} disabled={generating} style={{ padding: '6px 12px', borderRadius: 18, border: `1px solid ${styleS === s.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: styleS === s.val ? `${STUDIA_COLOR}20` : 'transparent', color: styleS === s.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: styleS === s.val ? 700 : 400, cursor: generating ? 'not-allowed' : 'pointer' }}>{s.emoji} {s.label}</button>)}
           </div>
         </div>
-
         <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: generating ? 'not-allowed' : 'pointer', padding: '10px 14px', background: sousTitres ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)', border: `1px solid ${sousTitres ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, borderRadius: 10, marginBottom: 16 }}>
           <input type="checkbox" checked={sousTitres} onChange={e => setSousTitres(e.target.checked)} disabled={generating} style={{ accentColor: STUDIA_COLOR }} />
           <span style={{ fontSize: 12, fontWeight: 700, color: sousTitres ? STUDIA_COLOR : 'rgba(237,232,219,0.5)' }}>📝 Sous-titres automatiques (recommandé)</span>
         </label>
-
         {voixDispo.length === 0 && (
           <div style={{ background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11, color: '#D4A853' }}>
             ⚠️ Aucune voix prête. Va cloner une voix dans l'onglet "Clone IA voix".
           </div>
         )}
-
         <button onClick={generer} disabled={!peutGenerer} style={{ width: '100%', padding: '12px', borderRadius: 10, border: 'none', background: peutGenerer ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: peutGenerer ? 'pointer' : 'not-allowed' }}>
           {generating ? '⏳ Génération du short...' : '⚡ Générer le short'}
         </button>
       </div>
-
-      {/* Galerie shorts */}
       <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
         <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>📱 Mes shorts {shorts.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({shorts.length})</span>}</h3>
         {shorts.length === 0 ? (
