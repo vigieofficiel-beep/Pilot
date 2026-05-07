@@ -10,6 +10,7 @@ import PageTemplates, { saveTemplate } from './pages/PageTemplates'
 import LicenceModal from './pages/LicenceModal'
 import PageEngagement from './pages/PageEngagement'
 import PageAssistant from './pages/PageAssistant'
+import PageStudIA from './pages/PageStudIA'
 
 const PROJECTS_DEFAULT = [
   { id:'vigie',        label:'Vigie',        color:'#5BA3C7', emoji:'🛡️', reseaux:['linkedin','facebook','discord','youtube'] },
@@ -48,6 +49,7 @@ const BG_THEMES = [
 
 const TABS = [
   { id:'contenu',          label:'Contenu',          emoji:'✍️' },
+  { id:'studia',           label:"Stud'IA",          emoji:'🎬' },
   { id:'templates',        label:'Templates',         emoji:'📚' },
   { id:'calendrier',       label:'Calendrier',        emoji:'📅' },
   { id:'monitoring',       label:'Alertes & Coûts',  emoji:'📊' },
@@ -60,7 +62,7 @@ const TABS = [
   { id:'personnalisation', label:'Personnalisation',  emoji:'⚙️' },
 ]
 
-const ACTIVE_TABS = ['contenu','templates','personnalisation','vault','monitoring','finances','sav','prospects','engagement','calendrier','assistant']
+const ACTIVE_TABS = ['contenu','studia','templates','personnalisation','vault','monitoring','finances','sav','prospects','engagement','calendrier','assistant']
 const STORAGE_KEY_PROJECTS = 'pilotage_projects'
 const STORAGE_KEY_THEME    = 'pilotage_theme'
 
@@ -451,6 +453,7 @@ export default function App() {
           </div>
           <div style={{flex:1,padding:24,overflowY:'auto'}}>
             {activeTab==='contenu'          && <TabContenu project={project} onGoToTemplates={()=>setActiveTab('templates')}/>}
+            {activeTab==='studia'           && <PageStudIA project={project}/>}
             {activeTab==='templates'        && <PageTemplates project={project}/>}
             {activeTab==='calendrier'       && <PageCalendrier project={project} projects={projects}/>}
             {activeTab==='personnalisation' && <PagePersonnalisation project={project}/>}
