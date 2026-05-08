@@ -433,7 +433,15 @@ function slugify(s) {
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'fichier'
 }
-
+// Convertit un File ou Blob en data URL (data:image/...;base64,...)
+async function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onloadend = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
 // ── MODAL CLONAGE VOIX (enregistrement micro OU upload fichier) ─────
 function VoixModal({ onClose, onValidate }) {
   const [mode, setMode] = useState('choose') // 'choose' | 'recording' | 'recorded' | 'uploaded'
@@ -1066,132 +1074,480 @@ function TabVoix({ project }) {
     </>
   )
 }
+// ── MODAL CONFIGURATION CLE API OPENAI ─────────────────────────
+function OpenAIKeyModal({ onClose, onSaved }) {
+  const [key, setKey] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
 
-// ── ONGLET 2 : IMAGES ────────────────────────────────────────────
-function TabImages({ project }) {
-  const storageKey = `pilotage_studia_images_${project.id}`
-  const [images, setImages] = useState(() => { try { const s = localStorage.getItem(storageKey); return s ? JSON.parse(s) : [] } catch { return [] } })
-  const [prompt, setPrompt] = useState('')
-  const [style, setStyle] = useState('photo')
-  const [format, setFormat] = useState('1:1')
-  const [batchSize, setBatchSize] = useState(2)
-  const [generating, setGenerating] = useState(false)
-  const [filter, setFilter] = useState('all')
-  const [showExportMenu, setShowExportMenu] = useState(false)
-  const [hoverId, setHoverId] = useState(null)
-  const [copiedId, setCopiedId] = useState(null)
-
-  useEffect(() => { try { setImages(JSON.parse(localStorage.getItem(storageKey)) || []) } catch { setImages([]) } }, [project.id])
-  const persist = (arr) => { localStorage.setItem(storageKey, JSON.stringify(arr)); setImages(arr) }
-
-  const generer = async () => {
-    if (!prompt.trim() || generating) return
-    setGenerating(true)
-    await new Promise(r => setTimeout(r, 3000))
-    const newImages = []
-    for (let i = 0; i < batchSize; i++) {
-      const seed = Date.now() + i
-      newImages.push({ id: seed.toString() + Math.random().toString(36).slice(2, 6), prompt: prompt.trim(), style, format, dataUrl: generateMockImageSvg(style, format, prompt, seed), createdAt: new Date().toISOString() })
+  const save = async () => {
+    if (!key.trim().startsWith('sk-')) {
+      setError('La cle doit commencer par "sk-".')
+      return
     }
-    persist([...newImages, ...images].slice(0, 100))
-    setGenerating(false)
+    setSaving(true)
+    setError(null)
+    try {
+      const res = await window.electronAPI.studia.setOpenAIKey(key.trim())
+      if (res.success) {
+        onSaved()
+      } else {
+        setError(res.error || 'Erreur inconnue')
+      }
+    } catch (err) {
+      setError(err.message)
+    }
+    setSaving(false)
   }
-
-  const supprimer = (id) => persist(images.filter(i => i.id !== id))
-  const copierPrompt = (img) => { navigator.clipboard.writeText(img.prompt); setCopiedId(img.id); setTimeout(() => setCopiedId(null), 1500) }
-  const telecharger = (img) => { const ext = img.dataUrl.startsWith('data:image/svg') ? 'svg' : 'png'; downloadDataUrl(img.dataUrl, `${slugify(img.prompt)}-${img.id}.${ext}`) }
-  const exporterLot = () => {
-    const filtered = images.filter(i => filter === 'all' || i.style === filter)
-    if (filtered.length === 0) { alert('Aucune image à exporter.'); return }
-    filtered.forEach((img, idx) => setTimeout(() => telecharger(img), idx * 150))
-  }
-
-  const filtered = filter === 'all' ? images : images.filter(i => i.style === filter)
-  const charCount = prompt.length
-  const tooLong = charCount > 500
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>🎨 Générer des images</h3>
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Prompt</label>
-            <span style={{ fontSize: 10, color: tooLong ? '#C75B4E' : 'rgba(237,232,219,0.4)', fontWeight: tooLong ? 700 : 400 }}>{charCount} / 500</span>
-          </div>
-          <textarea value={prompt} onChange={e => setPrompt(e.target.value)} placeholder="Ex: Un homme au bureau face à une fenêtre, lumière dorée du matin..." rows={3} style={{ ...iS, resize: 'vertical', borderColor: tooLong ? 'rgba(199,91,78,0.4)' : 'rgba(255,255,255,0.1)' }} />
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.88)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+         onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{ background: '#1a1d24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, width: '100%', maxWidth: 500, padding: 28 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>🔑 Cle API OpenAI</h3>
+          <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.06)', border: 'none', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', color: 'rgba(237,232,219,0.6)', fontSize: 12 }}>✕</button>
         </div>
-        <div style={{ marginBottom: 14 }}>
-          <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Style</label>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {STYLES_IMG.map(s => <button key={s.val} onClick={() => setStyle(s.val)} style={{ padding: '7px 12px', borderRadius: 18, border: `1px solid ${style === s.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: style === s.val ? `${STUDIA_COLOR}20` : 'transparent', color: style === s.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: style === s.val ? 700 : 400, cursor: 'pointer' }}>{s.emoji} {s.label}</button>)}
-          </div>
+
+        <div style={{ background: 'rgba(127,119,221,0.08)', border: '1px solid rgba(127,119,221,0.2)', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 12, color: 'rgba(237,232,219,0.7)', lineHeight: 1.6 }}>
+          💡 Ta cle API est stockee <strong>uniquement sur ton PC</strong> (fichier <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 5px', borderRadius: 4, fontSize: 11 }}>userData/openai-config.json</code>). Elle n'est jamais envoyee sur les serveurs Doppler. Toutes les requetes vont <strong>directement</strong> de ton PC vers <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 5px', borderRadius: 4, fontSize: 11 }}>api.openai.com</code>.
         </div>
-        <div style={{ marginBottom: 14 }}>
-          <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Format</label>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {FORMATS_IMG.map(f => <button key={f.val} onClick={() => setFormat(f.val)} style={{ padding: '7px 12px', borderRadius: 18, border: `1px solid ${format === f.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: format === f.val ? `${STUDIA_COLOR}20` : 'transparent', color: format === f.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: format === f.val ? 700 : 400, cursor: 'pointer' }}>{f.emoji} {f.label} <span style={{ opacity: 0.6, fontSize: 10 }}>({f.dims})</span></button>)}
-          </div>
+
+        <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Cle API (commence par sk-...)</label>
+        <input
+          type="password"
+          value={key}
+          onChange={e => setKey(e.target.value)}
+          placeholder="sk-..."
+          autoComplete="off"
+          style={iS}
+          onKeyDown={e => { if (e.key === 'Enter' && key.trim()) save() }}
+        />
+        <p style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 6 }}>
+          Tu n'as pas encore de cle ? Cree-en une sur <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" style={{ color: STUDIA_COLOR }}>platform.openai.com/api-keys</a>
+        </p>
+
+        {error && <div style={{ background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', borderRadius: 10, padding: 12, marginTop: 14, fontSize: 12, color: '#C75B4E' }}>⚠️ {error}</div>}
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
+          <button onClick={onClose} style={{ flex: 1, padding: '11px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.7)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Annuler</button>
+          <button onClick={save} disabled={!key.trim() || saving} style={{ flex: 1, padding: '11px', borderRadius: 10, border: 'none', background: (!key.trim() || saving) ? `${STUDIA_COLOR}40` : STUDIA_COLOR, color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: (!key.trim() || saving) ? 'not-allowed' : 'pointer' }}>
+            {saving ? '⏳ Verification...' : '💾 Enregistrer'}
+          </button>
         </div>
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Nombre d'images par lot</label>
-            <span style={{ fontSize: 11, color: STUDIA_COLOR, fontWeight: 700 }}>{batchSize}</span>
-          </div>
-          <input type="range" min="1" max="8" step="1" value={batchSize} onChange={e => setBatchSize(parseInt(e.target.value))} style={{ width: '100%', accentColor: STUDIA_COLOR }} />
-        </div>
-        <button onClick={generer} disabled={!prompt.trim() || tooLong || generating} style={{ width: '100%', padding: '12px', borderRadius: 10, border: 'none', background: (!prompt.trim() || tooLong || generating) ? `${STUDIA_COLOR}40` : STUDIA_COLOR, color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: (!prompt.trim() || tooLong || generating) ? 'not-allowed' : 'pointer' }}>{generating ? `⏳ Génération de ${batchSize} image${batchSize > 1 ? 's' : ''}...` : `🎨 Générer ${batchSize} image${batchSize > 1 ? 's' : ''}`}</button>
-      </div>
-      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>🖼️ Galerie {images.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({filtered.length}{filter !== 'all' ? `/${images.length}` : ''})</span>}</h3>
-          {images.length > 0 && (
-            <div style={{ position: 'relative' }}>
-              <button onClick={() => setShowExportMenu(!showExportMenu)} style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(255,255,255,0.04)', color: '#EDE8DB', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>☁️ Exporter le lot ▾</button>
-              {showExportMenu && <ExportMenu onLocal={exporterLot} onClose={() => setShowExportMenu(false)} />}
-            </div>
-          )}
-        </div>
-        {images.length > 0 && (
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
-            <button onClick={() => setFilter('all')} style={{ padding: '4px 10px', borderRadius: 14, border: `1px solid ${filter === 'all' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: filter === 'all' ? `${STUDIA_COLOR}20` : 'transparent', color: filter === 'all' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 10, fontWeight: filter === 'all' ? 700 : 400, cursor: 'pointer' }}>Tous ({images.length})</button>
-            {STYLES_IMG.map(s => { const count = images.filter(i => i.style === s.val).length; if (count === 0) return null; return <button key={s.val} onClick={() => setFilter(s.val)} style={{ padding: '4px 10px', borderRadius: 14, border: `1px solid ${filter === s.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: filter === s.val ? `${STUDIA_COLOR}20` : 'transparent', color: filter === s.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 10, fontWeight: filter === s.val ? 700 : 400, cursor: 'pointer' }}>{s.emoji} {s.label} ({count})</button> })}
-          </div>
-        )}
-        {filtered.length === 0 ? (
-          <div style={{ background: 'rgba(127,119,221,0.05)', border: `1px dashed ${STUDIA_COLOR}40`, borderRadius: 12, padding: 40, textAlign: 'center' }}>
-            <div style={{ fontSize: 36, marginBottom: 10 }}>🖼️</div>
-            <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)', marginBottom: 4 }}>{images.length === 0 ? 'Aucune image générée' : 'Aucune image avec ce filtre'}</p>
-          </div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
-            {filtered.map(img => {
-              const sty = STYLES_IMG.find(s => s.val === img.style)
-              const fmt = FORMATS_IMG.find(f => f.val === img.format)
-              const isHover = hoverId === img.id
-              return (
-                <div key={img.id} onMouseEnter={() => setHoverId(img.id)} onMouseLeave={() => setHoverId(null)} style={{ position: 'relative', borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.3)', aspectRatio: fmt?.ratio || 1, cursor: 'pointer' }}>
-                  <img src={img.dataUrl} alt={img.prompt} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-                  <div style={{ position: 'absolute', top: 8, left: 8, background: 'rgba(0,0,0,0.7)', color: '#EDE8DB', fontSize: 9, fontWeight: 700, padding: '3px 7px', borderRadius: 6, backdropFilter: 'blur(4px)' }}>{sty?.emoji} {sty?.label}</div>
-                  {isHover && (
-                    <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.4) 50%, transparent 100%)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: 10, gap: 8 }}>
-                      <p style={{ fontSize: 10, color: '#EDE8DB', margin: 0, lineHeight: 1.4, maxHeight: 60, overflow: 'hidden', textOverflow: 'ellipsis' }}>{img.prompt}</p>
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        <button onClick={() => telecharger(img)} title="Télécharger" style={{ flex: 1, padding: '6px', borderRadius: 6, border: 'none', background: STUDIA_COLOR, color: '#0D1B2A', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>📥</button>
-                        <button onClick={() => copierPrompt(img)} title="Copier prompt" style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.2)', background: copiedId === img.id ? '#5BC78A' : 'rgba(255,255,255,0.1)', color: copiedId === img.id ? '#0D1B2A' : '#EDE8DB', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>{copiedId === img.id ? '✓' : '📋'}</button>
-                        <button onClick={() => supprimer(img.id)} title="Supprimer" style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(199,91,78,0.4)', background: 'rgba(199,91,78,0.2)', color: '#C75B4E', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>🗑️</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
       </div>
     </div>
   )
 }
+// ── ONGLET 2 : IMAGES (GPT Image 1 OpenAI - BYOK) ────────────────
+function TabImages({ project }) {
+  const storageKey = `pilotage_studia_images_${project.id}`
+  const [images, setImages] = useState(() => { try { const s = localStorage.getItem(storageKey); return s ? JSON.parse(s) : [] } catch { return [] } })
+
+  // Mode genre
+  const [engine, setEngine] = useState('gpt')          // 'flux' (Phase 4b) | 'gpt' (actif)
+  const [mode, setMode] = useState('generate')         // 'generate' (txt2img) | 'edit' (img2img)
+  const [prompt, setPrompt] = useState('')
+  const [size, setSize] = useState('1024x1024')        // 1024x1024 | 1536x1024 | 1024x1536
+
+  // Mode img2img : photo de reference
+  const [refImage, setRefImage] = useState(null)       // { dataUrl, name }
+  const fileInputRef = useRef(null)
+
+  // Cle OpenAI + usage
+  const [hasKey, setHasKey] = useState(false)
+  const [keyChecked, setKeyChecked] = useState(false)
+  const [showKeyModal, setShowKeyModal] = useState(false)
+  const [usage, setUsage] = useState({ totalSpent: 0, generations: [] })
+
+  // Etat generation
+  const [generating, setGenerating] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
+  const [successMsg, setSuccessMsg] = useState(null)
+
+  // Galerie
+  const [hoverId, setHoverId] = useState(null)
+  const [copiedId, setCopiedId] = useState(null)
+  const [filter, setFilter] = useState('all')          // 'all' | 'generate' | 'edit'
+
+  const showError = (msg, dur = 8000) => { setErrorMsg(msg); setTimeout(() => setErrorMsg(null), dur) }
+  const showSuccess = (msg, dur = 4000) => { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(null), dur) }
+
+  const refreshKeyAndUsage = async () => {
+    try {
+      const has = await window.electronAPI.studia.hasOpenAIKey()
+      setHasKey(has)
+      const u = await window.electronAPI.studia.getUsage()
+      setUsage(u || { totalSpent: 0, generations: [] })
+    } catch (err) {
+      console.error('refreshKeyAndUsage:', err)
+    }
+    setKeyChecked(true)
+  }
+
+  useEffect(() => {
+    refreshKeyAndUsage()
+    try { setImages(JSON.parse(localStorage.getItem(storageKey)) || []) } catch { setImages([]) }
+  }, [project.id])
+
+  const persist = (arr) => { localStorage.setItem(storageKey, JSON.stringify(arr)); setImages(arr) }
+
+  const handleFileSelected = async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      showError('Le fichier doit etre une image (PNG, JPG, WEBP).')
+      return
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      showError('Image trop grosse (25 Mo max).')
+      return
+    }
+    try {
+      const dataUrl = await fileToDataUrl(file)
+      setRefImage({ dataUrl, name: file.name })
+    } catch (err) {
+      showError(`Erreur lecture fichier : ${err.message}`)
+    }
+  }
+
+  const removeRefImage = () => {
+    setRefImage(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const generer = async () => {
+    if (!prompt.trim() || generating) return
+    if (!hasKey) {
+      setShowKeyModal(true)
+      return
+    }
+    if (mode === 'edit' && !refImage) {
+      showError('En mode "Image + Texte", upload d\'abord une image de reference.')
+      return
+    }
+    setGenerating(true)
+    setErrorMsg(null)
+    try {
+      const result = await window.electronAPI.studia.generateImage({
+        projectId: project.id,
+        prompt: prompt.trim(),
+        mode,
+        photoDataUrl: mode === 'edit' ? refImage.dataUrl : null,
+        size,
+      })
+      if (!result.success) {
+        showError(`❌ ${result.error || 'Erreur generation'}`)
+      } else {
+        const newImg = {
+          id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+          prompt: prompt.trim(),
+          mode: result.mode,
+          engine: 'gpt',
+          size,
+          fileUrl: result.fileUrl,
+          dataUrl: result.dataUrl,        // pour affichage immediat (bypass file:// CSP)
+          filename: result.filename,
+          cost: result.cost,
+          refImageName: mode === 'edit' ? refImage?.name : null,
+          createdAt: new Date().toISOString(),
+        }
+        persist([newImg, ...images].slice(0, 100))
+        setUsage(prev => ({ ...prev, totalSpent: result.totalSpent }))
+        showSuccess(`✨ Image generee · cout ${result.cost.toFixed(2)}$ · total ${result.totalSpent.toFixed(2)}$`)
+        // On garde le prompt et la ref pour pouvoir generer une variation
+      }
+    } catch (err) {
+      showError(`❌ Erreur : ${err.message}`)
+      console.error(err)
+    }
+    setGenerating(false)
+  }
+
+  const supprimer = async (img) => {
+    if (img.fileUrl) {
+      try { await window.electronAPI.studia.deleteImage(img.fileUrl) } catch {}
+    }
+    persist(images.filter(i => i.id !== img.id))
+  }
+
+  const copierPrompt = (img) => {
+    navigator.clipboard.writeText(img.prompt)
+    setCopiedId(img.id)
+    setTimeout(() => setCopiedId(null), 1500)
+  }
+
+  const telecharger = async (img) => {
+    try {
+      if (img.fileUrl) {
+        const result = await window.electronAPI.studia.exportImage({
+          sourceFileUrl: img.fileUrl,
+          suggestedName: `${slugify(img.prompt)}-${img.id}.png`,
+        })
+        if (result.success) {
+          showSuccess(`💾 Image exportee : ${result.path.split(/[\\/]/).pop()}`)
+        } else if (!result.canceled) {
+          showError(`Erreur export : ${result.error}`)
+        }
+      } else if (img.dataUrl) {
+        downloadDataUrl(img.dataUrl, `${slugify(img.prompt)}-${img.id}.png`)
+      }
+    } catch (err) {
+      showError(`Erreur telechargement : ${err.message}`)
+    }
+  }
+
+  const ouvrirDossierImages = async () => {
+    await window.electronAPI.studia.revealImagesFolder()
+  }
+
+  const filtered = filter === 'all' ? images : images.filter(i => i.mode === filter)
+  const charCount = prompt.length
+  const tooLong = charCount > 1000
+  const peutGenerer = prompt.trim() && !tooLong && !generating && (mode === 'generate' || refImage)
+
+  // Cout estime par image selon mode
+  const coutEstime = mode === 'edit' ? 0.06 : 0.04
+
+  if (!keyChecked) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, color: 'rgba(237,232,219,0.4)' }}>
+        ⏳ Chargement...
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {showKeyModal && (
+        <OpenAIKeyModal
+          onClose={() => setShowKeyModal(false)}
+          onSaved={() => { setShowKeyModal(false); refreshKeyAndUsage(); showSuccess('🔑 Cle API enregistree') }}
+        />
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+        {errorMsg && (
+          <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', fontSize: 12, color: '#C75B4E' }}>
+            {errorMsg}
+          </div>
+        )}
+        {successMsg && (
+          <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.3)', fontSize: 12, color: '#5BC78A' }}>
+            {successMsg}
+          </div>
+        )}
+
+        {/* ═══ TOGGLE MODE FLUX / GPT IMAGE ═══ */}
+        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 16 }}>
+          <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>Moteur de generation</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <button
+              onClick={() => showError('FLUX arrive en Phase 4b (gratuit, RunPod). Pour l\'instant, utilise GPT Image.', 5000)}
+              disabled
+              style={{
+                padding: '14px 12px', borderRadius: 12,
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'rgba(255,255,255,0.02)',
+                color: 'rgba(237,232,219,0.3)',
+                fontSize: 12, fontWeight: 700, cursor: 'not-allowed',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                textAlign: 'center',
+              }}
+            >
+              <div style={{ fontSize: 20 }}>⚡</div>
+              <div>FLUX Schnell</div>
+              <div style={{ fontSize: 10, fontWeight: 400, opacity: 0.6 }}>~0.01€ · Bientot</div>
+            </button>
+            <button
+              onClick={() => setEngine('gpt')}
+              style={{
+                padding: '14px 12px', borderRadius: 12,
+                border: `1px solid ${engine === 'gpt' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`,
+                background: engine === 'gpt' ? `${STUDIA_COLOR}20` : 'rgba(255,255,255,0.02)',
+                color: engine === 'gpt' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)',
+                fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                textAlign: 'center',
+              }}
+            >
+              <div style={{ fontSize: 20 }}>⭐</div>
+              <div>GPT Image 1</div>
+              <div style={{ fontSize: 10, fontWeight: 400, opacity: 0.7 }}>~{coutEstime.toFixed(2)}$ · Premium</div>
+            </button>
+          </div>
+
+          {/* Stats credits/conso */}
+          <div style={{ marginTop: 14, padding: '10px 12px', background: 'rgba(0,0,0,0.2)', borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, fontSize: 11 }}>
+            <span style={{ color: 'rgba(237,232,219,0.5)' }}>
+              💰 OpenAI conso cumulee Pilot : <strong style={{ color: STUDIA_COLOR }}>{usage.totalSpent.toFixed(2)}$</strong>
+              {' · '}
+              <span style={{ color: 'rgba(237,232,219,0.4)' }}>{usage.generations?.length || 0} images</span>
+            </span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {hasKey ? (
+                <button onClick={() => setShowKeyModal(true)} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(237,232,219,0.6)', fontSize: 10, cursor: 'pointer' }} title="Modifier la cle">
+                  🔑 Cle ✓
+                </button>
+              ) : (
+                <button onClick={() => setShowKeyModal(true)} style={{ padding: '4px 10px', borderRadius: 6, border: `1px solid ${STUDIA_COLOR}`, background: `${STUDIA_COLOR}20`, color: STUDIA_COLOR, fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>
+                  🔑 Configurer cle API
+                </button>
+              )}
+              <a href="https://platform.openai.com/usage" target="_blank" rel="noopener noreferrer" style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(237,232,219,0.5)', fontSize: 10, cursor: 'pointer', textDecoration: 'none' }}>
+                Voir solde OpenAI ↗
+              </a>
+            </div>
+          </div>
+        </div>
+
+        {/* ═══ FORMULAIRE GENERATION ═══ */}
+        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
+          <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>🎨 Generer une image</h3>
+
+          {/* Mode txt2img / img2img */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Mode</label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <button onClick={() => setMode('generate')} style={{ padding: '10px 12px', borderRadius: 10, border: `1px solid ${mode === 'generate' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: mode === 'generate' ? `${STUDIA_COLOR}20` : 'transparent', color: mode === 'generate' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 12, fontWeight: 700, cursor: 'pointer', textAlign: 'left' }}>
+                <div style={{ fontSize: 11 }}>📝 Texte → Image</div>
+                <div style={{ fontSize: 9, fontWeight: 400, opacity: 0.7, marginTop: 2 }}>Prompt seul · ~0.04$</div>
+              </button>
+              <button onClick={() => setMode('edit')} style={{ padding: '10px 12px', borderRadius: 10, border: `1px solid ${mode === 'edit' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: mode === 'edit' ? `${STUDIA_COLOR}20` : 'transparent', color: mode === 'edit' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 12, fontWeight: 700, cursor: 'pointer', textAlign: 'left' }}>
+                <div style={{ fontSize: 11 }}>📷 Image + Texte → Image</div>
+                <div style={{ fontSize: 9, fontWeight: 400, opacity: 0.7, marginTop: 2 }}>Transformer une photo · ~0.06$</div>
+              </button>
+            </div>
+          </div>
+
+          {/* Upload image de reference (mode img2img) */}
+          {mode === 'edit' && (
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Image de reference *</label>
+              {!refImage ? (
+                <button onClick={() => fileInputRef.current?.click()} style={{ width: '100%', padding: '24px 14px', borderRadius: 10, border: `1px dashed ${STUDIA_COLOR}50`, background: `${STUDIA_COLOR}05`, color: STUDIA_COLOR, fontSize: 12, fontWeight: 600, cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 28 }}>📁</span>
+                  <span>Cliquer pour uploader une image</span>
+                  <span style={{ fontSize: 9, fontWeight: 400, opacity: 0.7 }}>PNG, JPG, WEBP · 25 Mo max</span>
+                </button>
+              ) : (
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: 10, background: 'rgba(0,0,0,0.2)', borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <img src={refImage.dataUrl} alt="Ref" style={{ width: 60, height: 60, objectFit: 'cover', borderRadius: 6 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, color: '#EDE8DB', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{refImage.name}</div>
+                    <div style={{ fontSize: 9, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>Image de reference</div>
+                  </div>
+                  <button onClick={removeRefImage} style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid rgba(199,91,78,0.3)', background: 'rgba(199,91,78,0.08)', color: '#C75B4E', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>✕ Retirer</button>
+                </div>
+              )}
+              <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleFileSelected} style={{ display: 'none' }} />
+            </div>
+          )}
+
+          {/* Prompt */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>
+                {mode === 'edit' ? 'Prompt de transformation' : 'Prompt'}
+              </label>
+              <span style={{ fontSize: 10, color: tooLong ? '#C75B4E' : 'rgba(237,232,219,0.4)', fontWeight: tooLong ? 700 : 400 }}>{charCount} / 1000</span>
+            </div>
+            <textarea
+              value={prompt}
+              onChange={e => setPrompt(e.target.value)}
+              placeholder={mode === 'edit'
+                ? 'Ex: Transforme en super-heros, change le fond en plage tropicale, ajoute des lunettes de soleil...'
+                : 'Ex: Un homme au bureau face a une fenetre, lumiere doree du matin...'
+              }
+              rows={4}
+              style={{ ...iS, resize: 'vertical', borderColor: tooLong ? 'rgba(199,91,78,0.4)' : 'rgba(255,255,255,0.1)' }}
+              disabled={generating}
+            />
+          </div>
+
+          {/* Format / Taille */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Format</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button onClick={() => setSize('1024x1024')} disabled={generating} style={{ padding: '7px 12px', borderRadius: 18, border: `1px solid ${size === '1024x1024' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: size === '1024x1024' ? `${STUDIA_COLOR}20` : 'transparent', color: size === '1024x1024' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: size === '1024x1024' ? 700 : 400, cursor: generating ? 'not-allowed' : 'pointer' }}>⬛ Carre 1024×1024</button>
+              <button onClick={() => setSize('1536x1024')} disabled={generating} style={{ padding: '7px 12px', borderRadius: 18, border: `1px solid ${size === '1536x1024' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: size === '1536x1024' ? `${STUDIA_COLOR}20` : 'transparent', color: size === '1536x1024' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: size === '1536x1024' ? 700 : 400, cursor: generating ? 'not-allowed' : 'pointer' }}>🖥️ Paysage 1536×1024</button>
+              <button onClick={() => setSize('1024x1536')} disabled={generating} style={{ padding: '7px 12px', borderRadius: 18, border: `1px solid ${size === '1024x1536' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: size === '1024x1536' ? `${STUDIA_COLOR}20` : 'transparent', color: size === '1024x1536' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: size === '1024x1536' ? 700 : 400, cursor: generating ? 'not-allowed' : 'pointer' }}>📱 Portrait 1024×1536</button>
+            </div>
+          </div>
+
+          <button onClick={generer} disabled={!peutGenerer} style={{ width: '100%', padding: '12px', borderRadius: 10, border: 'none', background: !peutGenerer ? `${STUDIA_COLOR}40` : STUDIA_COLOR, color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: !peutGenerer ? 'not-allowed' : 'pointer' }}>
+            {generating
+              ? '⏳ Generation en cours (15-40s)...'
+              : `${mode === 'edit' ? '🎨 Transformer l\'image' : '✨ Generer l\'image'} · ~${coutEstime.toFixed(2)}$`
+            }
+          </button>
+          {!hasKey && (
+            <p style={{ fontSize: 10, color: '#D4A853', marginTop: 8, textAlign: 'center' }}>
+              ⚠️ Cle API OpenAI non configuree. Clique pour la configurer.
+            </p>
+          )}
+        </div>
+
+        {/* ═══ GALERIE ═══ */}
+        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+            <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>
+              🖼️ Galerie {images.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({filtered.length}{filter !== 'all' ? `/${images.length}` : ''})</span>}
+            </h3>
+            {images.length > 0 && (
+              <button onClick={ouvrirDossierImages} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)', background: 'rgba(255,255,255,0.04)', color: '#EDE8DB', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>📁 Ouvrir dossier</button>
+            )}
+          </div>
+
+          {images.length > 0 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
+              <button onClick={() => setFilter('all')} style={{ padding: '4px 10px', borderRadius: 14, border: `1px solid ${filter === 'all' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: filter === 'all' ? `${STUDIA_COLOR}20` : 'transparent', color: filter === 'all' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 10, fontWeight: filter === 'all' ? 700 : 400, cursor: 'pointer' }}>Tous ({images.length})</button>
+              <button onClick={() => setFilter('generate')} style={{ padding: '4px 10px', borderRadius: 14, border: `1px solid ${filter === 'generate' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: filter === 'generate' ? `${STUDIA_COLOR}20` : 'transparent', color: filter === 'generate' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 10, fontWeight: filter === 'generate' ? 700 : 400, cursor: 'pointer' }}>📝 Texte ({images.filter(i => i.mode === 'generate').length})</button>
+              <button onClick={() => setFilter('edit')} style={{ padding: '4px 10px', borderRadius: 14, border: `1px solid ${filter === 'edit' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: filter === 'edit' ? `${STUDIA_COLOR}20` : 'transparent', color: filter === 'edit' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 10, fontWeight: filter === 'edit' ? 700 : 400, cursor: 'pointer' }}>📷 Img2img ({images.filter(i => i.mode === 'edit').length})</button>
+            </div>
+          )}
+
+          {filtered.length === 0 ? (
+            <div style={{ background: 'rgba(127,119,221,0.05)', border: `1px dashed ${STUDIA_COLOR}40`, borderRadius: 12, padding: 40, textAlign: 'center' }}>
+              <div style={{ fontSize: 36, marginBottom: 10 }}>🖼️</div>
+              <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)', marginBottom: 4 }}>{images.length === 0 ? 'Aucune image generee' : 'Aucune image avec ce filtre'}</p>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
+              {filtered.map(img => {
+                const isHover = hoverId === img.id
+                const ratio = img.size === '1536x1024' ? 1536/1024 : img.size === '1024x1536' ? 1024/1536 : 1
+                const modeLabel = img.mode === 'edit' ? '📷 Img2img' : '📝 Texte'
+                return (
+                  <div key={img.id} onMouseEnter={() => setHoverId(img.id)} onMouseLeave={() => setHoverId(null)} style={{ position: 'relative', borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.3)', aspectRatio: ratio, cursor: 'pointer' }}>
+                    <img src={img.dataUrl || img.fileUrl} alt={img.prompt} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                    <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', gap: 4 }}>
+                      <span style={{ background: 'rgba(0,0,0,0.7)', color: '#EDE8DB', fontSize: 9, fontWeight: 700, padding: '3px 7px', borderRadius: 6, backdropFilter: 'blur(4px)' }}>{modeLabel}</span>
+                      {img.cost && <span style={{ background: 'rgba(0,0,0,0.7)', color: STUDIA_COLOR, fontSize: 9, fontWeight: 700, padding: '3px 7px', borderRadius: 6, backdropFilter: 'blur(4px)' }}>{img.cost.toFixed(2)}$</span>}
+                    </div>
+                    {isHover && (
+                      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.4) 60%, transparent 100%)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', padding: 10, gap: 8 }}>
+                        <p style={{ fontSize: 10, color: '#EDE8DB', margin: 0, lineHeight: 1.4, maxHeight: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>{img.prompt}</p>
+                        {img.refImageName && <p style={{ fontSize: 9, color: 'rgba(237,232,219,0.5)', margin: 0, fontStyle: 'italic' }}>📷 Ref: {img.refImageName}</p>}
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <button onClick={() => telecharger(img)} title="Telecharger" style={{ flex: 1, padding: '6px', borderRadius: 6, border: 'none', background: STUDIA_COLOR, color: '#0D1B2A', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>📥</button>
+                          <button onClick={() => copierPrompt(img)} title="Copier prompt" style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.2)', background: copiedId === img.id ? '#5BC78A' : 'rgba(255,255,255,0.1)', color: copiedId === img.id ? '#0D1B2A' : '#EDE8DB', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>{copiedId === img.id ? '✓' : '📋'}</button>
+                          <button onClick={() => supprimer(img)} title="Supprimer" style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(199,91,78,0.4)', background: 'rgba(199,91,78,0.2)', color: '#C75B4E', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>🗑️</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  )
+}
+
 
 // ── MODAL ANNOTATION VIDÉO ────────────────────────────────────────
 function AnnotationModal({ timestamp, onSave, onClose }) {
