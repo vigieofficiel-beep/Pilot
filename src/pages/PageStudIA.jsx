@@ -74,10 +74,6 @@ function fmtTime(sec) {
 // HELPERS API AGENTS DOPPLER (Stud'IA)
 // ============================================
 
-/**
- * Récupère la clé X-API-Key Agents Doppler depuis le Coffre-fort Pilot.
- * Identique au pattern utilisé dans PageProspects.
- */
 function getAgentsApiKey() {
   try {
     const vault = JSON.parse(localStorage.getItem('pilotage_vault') || '[]')
@@ -90,21 +86,16 @@ function getAgentsApiKey() {
   }
 }
 
-/**
- * Génère un script vidéo via Claude API.
- */
+// --- Agent SCRIPT (Phase 2 backend) ---
+
 async function genererScriptIA({ projectId, titre, sujet, dureeCibleMin, style, bRoll, voixName }) {
   const apiKey = getAgentsApiKey()
   if (!apiKey) {
     throw new Error('Clé Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
   }
-
   const res = await fetch(`${AGENTS_API_URL}/studia/script/generer`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Key': apiKey,
-    },
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
     body: JSON.stringify({
       project_id: projectId,
       titre,
@@ -115,26 +106,17 @@ async function genererScriptIA({ projectId, titre, sujet, dureeCibleMin, style, 
       voix_name: voixName || null,
     }),
   })
-
   if (!res.ok) {
     let detail = `HTTP ${res.status}`
-    try {
-      const errJson = await res.json()
-      detail = errJson.detail || detail
-    } catch {}
+    try { const e = await res.json(); detail = e.detail || detail } catch {}
     throw new Error(detail)
   }
-
   return res.json()
 }
 
-/**
- * Liste les scripts existants pour un projet.
- */
 async function listScriptsIA(projectId) {
   const apiKey = getAgentsApiKey()
   if (!apiKey) return { scripts: [], count: 0 }
-
   try {
     const res = await fetch(
       `${AGENTS_API_URL}/studia/script/list?project_id=${encodeURIComponent(projectId)}`,
@@ -147,50 +129,131 @@ async function listScriptsIA(projectId) {
   }
 }
 
-/**
- * Supprime un script du backend.
- */
 async function deleteScriptIA(scriptId) {
   const apiKey = getAgentsApiKey()
   if (!apiKey) throw new Error('Clé Agents Doppler introuvable')
-
   const res = await fetch(`${AGENTS_API_URL}/studia/script/${scriptId}`, {
     method: 'DELETE',
     headers: { 'X-API-Key': apiKey },
   })
   if (!res.ok) {
     let detail = `HTTP ${res.status}`
-    try {
-      const errJson = await res.json()
-      detail = errJson.detail || detail
-    } catch {}
+    try { const e = await res.json(); detail = e.detail || detail } catch {}
     throw new Error(detail)
   }
   return res.json()
 }
 
-// ============================================
-// HELPERS GÉNÉRATION MOCKS (audio/image/vidéo)
-// ============================================
+// --- Agent VOIX (Phase 3 backend - Fish Speech via RunPod) ---
 
-function generateSilentWav(durationSec) {
-  const sampleRate = 22050
-  const numSamples = Math.floor(sampleRate * durationSec)
-  const buffer = new ArrayBuffer(44 + numSamples * 2)
-  const view = new DataView(buffer)
-  const writeStr = (offset, str) => { for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i)) }
-  writeStr(0, 'RIFF'); view.setUint32(4, 36 + numSamples * 2, true); writeStr(8, 'WAVE')
-  writeStr(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true)
-  view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true)
-  view.setUint16(32, 2, true); view.setUint16(34, 16, true)
-  writeStr(36, 'data'); view.setUint32(40, numSamples * 2, true)
-  const blob = new Blob([buffer], { type: 'audio/wav' })
-  return new Promise(resolve => {
-    const reader = new FileReader()
-    reader.onloadend = () => resolve(reader.result)
-    reader.readAsDataURL(blob)
-  })
+/**
+ * Convertit une dataURL "data:audio/...;base64,XXXX" en pure base64 string.
+ */
+function dataUrlToBase64(dataUrl) {
+  if (!dataUrl) return ''
+  const idx = dataUrl.indexOf(',')
+  return idx >= 0 ? dataUrl.slice(idx + 1) : dataUrl
 }
+
+/**
+ * Crée une voix de référence (clonage) côté backend.
+ * Le payload audio_base64 est gros (~1MB pour 30s) -- nginx accepte jusqu'à 100M.
+ */
+async function clonerVoixIA({ projectId, name, audioBase64, referenceText, durationSec }) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) throw new Error('Clé Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
+  const res = await fetch(`${AGENTS_API_URL}/studia/voix/cloner`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+    body: JSON.stringify({
+      project_id: projectId,
+      name,
+      audio_base64: audioBase64,
+      reference_text: referenceText,
+      duration_sec: durationSec,
+    }),
+  })
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try { const e = await res.json(); detail = e.detail || detail } catch {}
+    throw new Error(detail)
+  }
+  return res.json()
+}
+
+/**
+ * Liste les voix d'un projet (sans audio_base64, pour rester léger).
+ */
+async function listVoixIA(projectId) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) return { voix: [], count: 0 }
+  try {
+    const res = await fetch(
+      `${AGENTS_API_URL}/studia/voix/list?project_id=${encodeURIComponent(projectId)}`,
+      { headers: { 'X-API-Key': apiKey } }
+    )
+    if (!res.ok) return { voix: [], count: 0 }
+    return res.json()
+  } catch {
+    return { voix: [], count: 0 }
+  }
+}
+
+async function deleteVoixIA(voixId) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) throw new Error('Clé Agents Doppler introuvable')
+  const res = await fetch(`${AGENTS_API_URL}/studia/voix/${voixId}`, {
+    method: 'DELETE',
+    headers: { 'X-API-Key': apiKey },
+  })
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try { const e = await res.json(); detail = e.detail || detail } catch {}
+    throw new Error(detail)
+  }
+  return res.json()
+}
+
+/**
+ * Génère un audio Fish Speech via RunPod.
+ * Premier appel à froid : 60-180s (cold boot). Appels suivants : 5-15s.
+ */
+async function genererAudioIA({ voixId, texte, ton, vitesse }) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) throw new Error('Clé Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
+  const res = await fetch(`${AGENTS_API_URL}/studia/voix/generer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+    body: JSON.stringify({
+      voix_id: voixId,
+      texte,
+      ton,
+      vitesse,
+    }),
+  })
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try { const e = await res.json(); detail = e.detail || detail } catch {}
+    throw new Error(detail)
+  }
+  return res.json() // { audio_base64, voix_name, duree_estimee_sec, ... }
+}
+
+/**
+ * Décode un base64 en blob URL audio/wav exploitable par <audio>.
+ */
+function base64ToAudioBlobUrl(base64) {
+  const byteChars = atob(base64)
+  const byteNumbers = new Array(byteChars.length)
+  for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i)
+  const byteArray = new Uint8Array(byteNumbers)
+  const blob = new Blob([byteArray], { type: 'audio/wav' })
+  return URL.createObjectURL(blob)
+}
+
+// ============================================
+// HELPERS GÉNÉRATION MOCKS (image/vidéo placeholder)
+// ============================================
 
 function generateMockImageSvg(style, format, prompt, seed) {
   const fmt = FORMATS_IMG.find(f => f.val === format) || FORMATS_IMG[0]
@@ -287,6 +350,7 @@ function slugify(s) {
 function RecordingModal({ onClose, onValidate }) {
   const [step, setStep] = useState('idle')
   const [name, setName] = useState('')
+  const [referenceText, setReferenceText] = useState('')
   const [duration, setDuration] = useState(0)
   const [audioUrl, setAudioUrl] = useState(null)
   const [audioBlob, setAudioBlob] = useState(null)
@@ -354,9 +418,14 @@ function RecordingModal({ onClose, onValidate }) {
   }
 
   const validate = async () => {
-    if (!name.trim() || !audioBlob) return
+    if (!name.trim() || !referenceText.trim() || !audioBlob) return
     const reader = new FileReader()
-    reader.onloadend = () => onValidate({ name: name.trim(), audioData: reader.result, duration })
+    reader.onloadend = () => onValidate({
+      name: name.trim(),
+      audioData: reader.result,
+      referenceText: referenceText.trim(),
+      duration,
+    })
     reader.readAsDataURL(audioBlob)
   }
 
@@ -370,25 +439,37 @@ function RecordingModal({ onClose, onValidate }) {
   }, [])
 
   const tooShort = duration < 10
+  const canValidate = name.trim() && referenceText.trim() && audioBlob
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.88)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
          onClick={e => { if (e.target === e.currentTarget && step !== 'recording') onClose() }}>
-      <div style={{ background: '#1a1d24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, width: '100%', maxWidth: 500, padding: 28 }}>
+      <div style={{ background: '#1a1d24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, width: '100%', maxWidth: 500, padding: 28, maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h3 style={{ fontSize: 16, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>🎙️ Cloner une voix</h3>
           {step !== 'recording' && <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.06)', border: 'none', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', color: 'rgba(237,232,219,0.6)', fontSize: 12 }}>✕</button>}
         </div>
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 14 }}>
           <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Nom de la voix *</label>
           <input value={name} onChange={e => setName(e.target.value)} placeholder="Ex: Lucien posé, Lucien colère..." disabled={step === 'recording'} style={{ ...iS, opacity: step === 'recording' ? 0.5 : 1 }} />
         </div>
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Texte que tu vas lire * <span style={{ color: 'rgba(237,232,219,0.3)' }}>(transcription exacte de ce que tu enregistres)</span></label>
+          <textarea
+            value={referenceText}
+            onChange={e => setReferenceText(e.target.value)}
+            placeholder="Ex: Bonjour, je m'appelle Lucien et je teste actuellement le clonage vocal pour mon logiciel Pilot."
+            rows={3}
+            disabled={step === 'recording'}
+            style={{ ...iS, resize: 'vertical', opacity: step === 'recording' ? 0.5 : 1 }}
+          />
+        </div>
         <div style={{ background: 'rgba(127,119,221,0.08)', border: '1px solid rgba(127,119,221,0.2)', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 12, color: 'rgba(237,232,219,0.7)', lineHeight: 1.6 }}>
-          💡 <strong>Conseil :</strong> Lis un texte naturel pendant <strong>au moins 30 secondes</strong>.
+          💡 <strong>Conseil :</strong> Lis le texte ci-dessus pendant <strong>au moins 30 secondes</strong> à voix haute. Plus le texte enregistré correspond exactement à ta transcription, meilleur sera le clonage.
         </div>
         {error && <div style={{ background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', borderRadius: 10, padding: 14, marginBottom: 16, fontSize: 12, color: '#C75B4E' }}>⚠️ {error}</div>}
         {step === 'idle' && (
-          <button onClick={startRecording} disabled={!name.trim()} style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: name.trim() ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 14, fontWeight: 800, cursor: name.trim() ? 'pointer' : 'not-allowed' }}>● Démarrer l'enregistrement</button>
+          <button onClick={startRecording} disabled={!name.trim() || !referenceText.trim()} style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: (name.trim() && referenceText.trim()) ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 14, fontWeight: 800, cursor: (name.trim() && referenceText.trim()) ? 'pointer' : 'not-allowed' }}>● Démarrer l'enregistrement</button>
         )}
         {step === 'recording' && (
           <div>
@@ -417,7 +498,7 @@ function RecordingModal({ onClose, onValidate }) {
             {tooShort && <div style={{ background: 'rgba(212,168,83,0.08)', border: '1px solid rgba(212,168,83,0.3)', borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11, color: '#D4A853' }}>⚠️ Enregistrement court ({fmtTime(duration)}). Vise au moins 30s.</div>}
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={reset} style={{ flex: 1, padding: '12px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.7)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>🔄 Recommencer</button>
-              <button onClick={validate} disabled={!name.trim()} style={{ flex: 1, padding: '12px', borderRadius: 10, border: 'none', background: name.trim() ? '#5BC78A' : 'rgba(91,199,138,0.3)', color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: name.trim() ? 'pointer' : 'not-allowed' }}>✅ Valider et cloner</button>
+              <button onClick={validate} disabled={!canValidate} style={{ flex: 1, padding: '12px', borderRadius: 10, border: 'none', background: canValidate ? '#5BC78A' : 'rgba(91,199,138,0.3)', color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: canValidate ? 'pointer' : 'not-allowed' }}>✅ Valider et cloner</button>
             </div>
           </div>
         )}
@@ -453,60 +534,151 @@ function ExportMenu({ onLocal, onClose, anchorRight = true }) {
   )
 }
 
-// ── ONGLET 1 : VOIX ──────────────────────────────────────────────
+// ── ONGLET 1 : VOIX (BACKEND-CONNECTED Fish Speech / RunPod) ──────
 function TabVoix({ project }) {
-  const storageKey = `pilotage_studia_voix_${project.id}`
   const audiosKey = `pilotage_studia_audios_${project.id}`
-  const [voix, setVoix] = useState(() => { try { const s = localStorage.getItem(storageKey); return s ? JSON.parse(s) : [] } catch { return [] } })
+
+  const [voix, setVoix] = useState([])
+  const [loadingVoix, setLoadingVoix] = useState(false)
   const [audios, setAudios] = useState(() => { try { const s = localStorage.getItem(audiosKey); return s ? JSON.parse(s) : [] } catch { return [] } })
   const [showRecModal, setShowRecModal] = useState(false)
+  const [cloning, setCloning] = useState(false)
   const [selectedVoix, setSelectedVoix] = useState('')
   const [ton, setTon] = useState('neutre')
   const [vitesse, setVitesse] = useState(1.0)
   const [texte, setTexte] = useState('')
   const [generating, setGenerating] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
+  const [successMsg, setSuccessMsg] = useState(null)
+
+  const showError = (msg, dur = 6000) => { setErrorMsg(msg); setTimeout(() => setErrorMsg(null), dur) }
+  const showSuccess = (msg, dur = 4000) => { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(null), dur) }
+
+  const refreshVoix = async () => {
+    setLoadingVoix(true)
+    try {
+      const res = await listVoixIA(project.id)
+      setVoix(res.voix || [])
+    } catch (err) {
+      console.error('Erreur chargement voix:', err)
+      setVoix([])
+    }
+    setLoadingVoix(false)
+  }
 
   useEffect(() => {
-    try { setVoix(JSON.parse(localStorage.getItem(storageKey)) || []) } catch { setVoix([]) }
+    refreshVoix()
     try { setAudios(JSON.parse(localStorage.getItem(audiosKey)) || []) } catch { setAudios([]) }
     setSelectedVoix('')
   }, [project.id])
 
-  const persistVoix = (v) => { localStorage.setItem(storageKey, JSON.stringify(v)); setVoix(v) }
   const persistAudios = (a) => { localStorage.setItem(audiosKey, JSON.stringify(a)); setAudios(a) }
 
-  const handleNewVoix = ({ name, audioData, duration }) => {
-    const newVoix = { id: Date.now().toString(), name, audioData, duration, status: 'cloning', createdAt: new Date().toISOString() }
-    persistVoix([newVoix, ...voix])
+  // Quand on valide la modal d'enregistrement, on POST au backend
+  const handleNewVoix = async ({ name, audioData, referenceText, duration }) => {
     setShowRecModal(false)
-    setTimeout(() => setVoix(prev => {
-      const final = prev.map(v => v.id === newVoix.id ? { ...v, status: 'ready' } : v)
-      localStorage.setItem(storageKey, JSON.stringify(final))
-      return final
-    }), 3000)
+    setCloning(true)
+    setErrorMsg(null)
+    try {
+      const audioBase64 = dataUrlToBase64(audioData)
+      const result = await clonerVoixIA({
+        projectId: project.id,
+        name,
+        audioBase64,
+        referenceText,
+        durationSec: Math.round(duration),
+      })
+      await refreshVoix()
+      setSelectedVoix(result.id)
+      showSuccess(`✅ Voix "${name}" enregistrée et prête à l'emploi !`)
+    } catch (err) {
+      console.error('Erreur clonage voix:', err)
+      showError(`❌ Erreur clonage : ${err.message}`)
+    }
+    setCloning(false)
   }
 
-  const supprimerVoix = (id) => {
+  const supprimerVoix = async (id) => {
     if (!confirm('Supprimer cette voix ?')) return
-    persistVoix(voix.filter(v => v.id !== id))
-    if (selectedVoix === id) setSelectedVoix('')
+    try {
+      await deleteVoixIA(id)
+      setVoix(prev => prev.filter(v => v.id !== id))
+      if (selectedVoix === id) setSelectedVoix('')
+      showSuccess('🗑️ Voix supprimée')
+    } catch (err) {
+      showError(`❌ Erreur suppression : ${err.message}`)
+    }
   }
 
+  // Génération audio via Fish Speech RunPod
   const genererAudio = async () => {
     if (!selectedVoix || !texte.trim() || generating) return
     setGenerating(true)
-    await new Promise(r => setTimeout(r, 2000))
-    const v = voix.find(x => x.id === selectedVoix)
-    const dur = Math.max(3, texte.split(/\s+/).length * 0.4)
-    const mockAudio = await generateSilentWav(dur)
-    const newAudio = { id: Date.now().toString(), voixId: selectedVoix, voixName: v?.name || 'Voix supprimée', ton, vitesse, texte: texte.slice(0, 200), audioData: mockAudio, duration: dur, createdAt: new Date().toISOString() }
-    persistAudios([newAudio, ...audios].slice(0, 20))
-    setTexte('')
+    setErrorMsg(null)
+    try {
+      const result = await genererAudioIA({
+        voixId: selectedVoix,
+        texte: texte.trim(),
+        ton,
+        vitesse,
+      })
+      // Décode base64 -> blob URL pour <audio>
+      const blobUrl = base64ToAudioBlobUrl(result.audio_base64)
+      const newAudio = {
+        id: Date.now().toString(),
+        voixId: selectedVoix,
+        voixName: result.voix_name || 'Voix',
+        ton,
+        vitesse,
+        texte: texte.slice(0, 200),
+        // On stocke audio_base64 (au lieu d'audioData de WAV) pour pouvoir recréer le blob URL au reload
+        audioBase64: result.audio_base64,
+        duration: result.duree_estimee_sec || Math.max(3, texte.split(/\s+/).length * 0.4),
+        // blobUrl est volatile (perdu au reload) -- on le re-crée à l'affichage
+        _blobUrl: blobUrl,
+        createdAt: new Date().toISOString(),
+      }
+      // Sauvegarde sans le _blobUrl (volatile)
+      const toPersist = [{ ...newAudio, _blobUrl: undefined }, ...audios].slice(0, 20)
+      persistAudios(toPersist)
+      // Mais en mémoire on garde le blobUrl pour l'affichage immédiat
+      setAudios(prev => [newAudio, ...prev].slice(0, 20))
+      setTexte('')
+      showSuccess(`🎙️ Audio généré (${Math.round(result.duree_estimee_sec || 0)}s)`)
+    } catch (err) {
+      console.error('Erreur génération audio:', err)
+      // Cas spécial : timeout RunPod
+      if (err.message.includes('timeout') || err.message.includes('504')) {
+        showError(`⏱️ Premier appel à froid trop long. RéessaieClient: la deuxième tentative sera rapide (~10s).`, 10000)
+      } else {
+        showError(`❌ Erreur : ${err.message}`)
+      }
+    }
     setGenerating(false)
   }
 
-  const supprimerAudio = (id) => persistAudios(audios.filter(a => a.id !== id))
-  const voixPretes = voix.filter(v => v.status === 'ready')
+  // Reconstruit blobUrl pour les audios qui n'en ont pas (rechargement de page)
+  const getAudioPlaybackUrl = (a) => {
+    if (a._blobUrl) return a._blobUrl
+    if (a.audioBase64) {
+      try {
+        const url = base64ToAudioBlobUrl(a.audioBase64)
+        // Mute la mise à jour pour éviter re-render infini : on update via setAudios une seule fois
+        setAudios(prev => prev.map(x => x.id === a.id ? { ...x, _blobUrl: url } : x))
+        return url
+      } catch {
+        return null
+      }
+    }
+    return a.audioData || null  // fallback ancien format
+  }
+
+  const supprimerAudio = (id) => {
+    const a = audios.find(x => x.id === id)
+    if (a?._blobUrl) URL.revokeObjectURL(a._blobUrl)
+    persistAudios(audios.filter(x => x.id !== id))
+  }
+
   const charCount = texte.length
   const tooLong = charCount > 2000
 
@@ -514,13 +686,46 @@ function TabVoix({ project }) {
     <>
       {showRecModal && <RecordingModal onClose={() => setShowRecModal(false)} onValidate={handleNewVoix} />}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+        {/* Colonne gauche : voix clonées */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>🎤 Mes voix clonées {voix.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({voix.length})</span>}</h3>
-              <button onClick={() => setShowRecModal(true)} style={{ padding: '8px 14px', borderRadius: 10, border: 'none', background: STUDIA_COLOR, color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>🎙️ Cloner ma voix</button>
+
+          {/* Messages */}
+          {errorMsg && (
+            <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', fontSize: 12, color: '#C75B4E' }}>
+              {errorMsg}
             </div>
-            {voix.length === 0 ? (
+          )}
+          {successMsg && (
+            <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.3)', fontSize: 12, color: '#5BC78A' }}>
+              {successMsg}
+            </div>
+          )}
+
+          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 8 }}>
+              <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>🎤 Mes voix clonées {voix.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({voix.length})</span>}</h3>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button onClick={refreshVoix} disabled={loadingVoix || cloning} title="Rafraîchir" style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(237,232,219,0.6)', fontSize: 11, cursor: (loadingVoix || cloning) ? 'not-allowed' : 'pointer' }}>
+                  {loadingVoix ? '⏳' : '🔄'}
+                </button>
+                <button onClick={() => setShowRecModal(true)} disabled={cloning} style={{ padding: '8px 14px', borderRadius: 10, border: 'none', background: cloning ? `${STUDIA_COLOR}40` : STUDIA_COLOR, color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: cloning ? 'not-allowed' : 'pointer' }}>
+                  {cloning ? '⏳ Enregistrement...' : '🎙️ Cloner ma voix'}
+                </button>
+              </div>
+            </div>
+
+            {cloning && (
+              <div style={{ background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 11, color: '#D4A853', textAlign: 'center' }}>
+                ⏳ Envoi de la voix au backend (peut prendre 5-10s pour 1MB d'audio)...
+              </div>
+            )}
+
+            {loadingVoix && voix.length === 0 ? (
+              <div style={{ background: 'rgba(127,119,221,0.05)', border: `1px dashed ${STUDIA_COLOR}40`, borderRadius: 12, padding: 28, textAlign: 'center' }}>
+                <div style={{ fontSize: 24, marginBottom: 10 }}>⏳</div>
+                <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.5)' }}>Chargement des voix...</p>
+              </div>
+            ) : voix.length === 0 ? (
               <div style={{ background: 'rgba(127,119,221,0.05)', border: `1px dashed ${STUDIA_COLOR}40`, borderRadius: 12, padding: 28, textAlign: 'center' }}>
                 <div style={{ fontSize: 32, marginBottom: 10 }}>🎙️</div>
                 <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)', marginBottom: 6 }}>Aucune voix clonée pour ce projet</p>
@@ -528,35 +733,43 @@ function TabVoix({ project }) {
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {voix.map(v => (
-                  <div key={v.id} style={{ background: selectedVoix === v.id ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)', border: `1px solid ${selectedVoix === v.id ? STUDIA_COLOR : 'rgba(255,255,255,0.07)'}`, borderRadius: 12, padding: 14 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-                      <div style={{ width: 38, height: 38, borderRadius: '50%', background: `${STUDIA_COLOR}25`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>🎤</div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.name}</div>
-                        <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>
-                          {v.status === 'cloning' ? <span style={{ color: '#D4A853' }}>⏳ Clonage en cours...</span> : <span style={{ color: '#5BC78A' }}>✅ Prête</span>}
-                          {' · '}{fmtTime(v.duration || 0)} d'échantillon
+                {voix.map(v => {
+                  const isSelected = selectedVoix === v.id
+                  const isReady = v.status === 'ready'
+                  return (
+                    <div key={v.id} style={{ background: isSelected ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)', border: `1px solid ${isSelected ? STUDIA_COLOR : 'rgba(255,255,255,0.07)'}`, borderRadius: 12, padding: 14 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+                        <div style={{ width: 38, height: 38, borderRadius: '50%', background: `${STUDIA_COLOR}25`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>🎤</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.name}</div>
+                          <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>
+                            {!isReady ? <span style={{ color: '#D4A853' }}>⏳ {v.status || 'En traitement'}</span> : <span style={{ color: '#5BC78A' }}>✅ Prête</span>}
+                            {' · '}{fmtTime(v.duration_sec || 0)} d'échantillon
+                          </div>
                         </div>
+                        <button onClick={() => supprimerVoix(v.id)} style={{ padding: '6px 8px', borderRadius: 7, border: '1px solid rgba(199,91,78,0.2)', background: 'transparent', color: '#C75B4E', fontSize: 11, cursor: 'pointer', flexShrink: 0 }} title="Supprimer">🗑️</button>
                       </div>
-                      <button onClick={() => supprimerVoix(v.id)} style={{ padding: '6px 8px', borderRadius: 7, border: '1px solid rgba(199,91,78,0.2)', background: 'transparent', color: '#C75B4E', fontSize: 11, cursor: 'pointer', flexShrink: 0 }} title="Supprimer">🗑️</button>
+                      <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', fontStyle: 'italic', padding: '6px 10px', background: 'rgba(0,0,0,0.2)', borderRadius: 6, marginBottom: 8 }}>
+                        "{(v.reference_text || '').slice(0, 100)}{(v.reference_text || '').length > 100 ? '...' : ''}"
+                      </div>
+                      {isReady && (
+                        <button onClick={() => setSelectedVoix(v.id)} style={{ width: '100%', padding: '7px', borderRadius: 8, border: `1px solid ${isSelected ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: isSelected ? STUDIA_COLOR : 'transparent', color: isSelected ? '#0D1B2A' : 'rgba(237,232,219,0.6)', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                          {isSelected ? '✓ Voix sélectionnée' : 'Sélectionner pour génération →'}
+                        </button>
+                      )}
                     </div>
-                    {v.audioData && v.status === 'ready' && <audio src={v.audioData} controls style={{ width: '100%', height: 32 }} />}
-                    {v.status === 'ready' && (
-                      <button onClick={() => setSelectedVoix(v.id)} style={{ marginTop: 8, width: '100%', padding: '7px', borderRadius: 8, border: `1px solid ${selectedVoix === v.id ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: selectedVoix === v.id ? STUDIA_COLOR : 'transparent', color: selectedVoix === v.id ? '#0D1B2A' : 'rgba(237,232,219,0.6)', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
-                        {selectedVoix === v.id ? '✓ Voix sélectionnée' : 'Sélectionner pour génération →'}
-                      </button>
-                    )}
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>
         </div>
+
+        {/* Colonne droite : génération + audios */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
             <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>✨ Générer un audio</h3>
-            {voixPretes.length === 0 ? (
+            {voix.filter(v => v.status === 'ready').length === 0 ? (
               <div style={{ background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 10, padding: 16, fontSize: 12, color: '#D4A853', textAlign: 'center' }}>⚠️ Aucune voix prête. Clone d'abord une voix.</div>
             ) : (
               <>
@@ -564,7 +777,7 @@ function TabVoix({ project }) {
                   <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Voix</label>
                   <select value={selectedVoix} onChange={e => setSelectedVoix(e.target.value)} style={{ ...iS, cursor: 'pointer' }}>
                     <option value="">— Choisir une voix —</option>
-                    {voixPretes.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                    {voix.filter(v => v.status === 'ready').map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
                   </select>
                 </div>
                 <div style={{ marginBottom: 14 }}>
@@ -578,16 +791,23 @@ function TabVoix({ project }) {
                     <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Texte à synthétiser</label>
                     <span style={{ fontSize: 10, color: tooLong ? '#C75B4E' : 'rgba(237,232,219,0.4)', fontWeight: tooLong ? 700 : 400 }}>{charCount} / 2000</span>
                   </div>
-                  <textarea value={texte} onChange={e => setTexte(e.target.value)} placeholder="Tape ou colle le texte à faire prononcer..." rows={6} style={{ ...iS, resize: 'vertical', borderColor: tooLong ? 'rgba(199,91,78,0.4)' : 'rgba(255,255,255,0.1)' }} />
+                  <textarea value={texte} onChange={e => setTexte(e.target.value)} placeholder="Tape ou colle le texte à faire prononcer..." rows={6} style={{ ...iS, resize: 'vertical', borderColor: tooLong ? 'rgba(199,91,78,0.4)' : 'rgba(255,255,255,0.1)' }} disabled={generating} />
                 </div>
                 <div style={{ marginBottom: 16 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                     <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Vitesse</label>
                     <span style={{ fontSize: 11, color: STUDIA_COLOR, fontWeight: 700 }}>{vitesse.toFixed(1)}x</span>
                   </div>
-                  <input type="range" min="0.8" max="1.2" step="0.1" value={vitesse} onChange={e => setVitesse(parseFloat(e.target.value))} style={{ width: '100%', accentColor: STUDIA_COLOR }} />
+                  <input type="range" min="0.8" max="1.2" step="0.1" value={vitesse} onChange={e => setVitesse(parseFloat(e.target.value))} style={{ width: '100%', accentColor: STUDIA_COLOR }} disabled={generating} />
                 </div>
-                <button onClick={genererAudio} disabled={!selectedVoix || !texte.trim() || tooLong || generating} style={{ width: '100%', padding: '12px', borderRadius: 10, border: 'none', background: (!selectedVoix || !texte.trim() || tooLong || generating) ? `${STUDIA_COLOR}40` : STUDIA_COLOR, color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: (!selectedVoix || !texte.trim() || tooLong || generating) ? 'not-allowed' : 'pointer' }}>{generating ? '⏳ Génération en cours...' : "🎙️ Générer l'audio"}</button>
+                <button onClick={genererAudio} disabled={!selectedVoix || !texte.trim() || tooLong || generating} style={{ width: '100%', padding: '12px', borderRadius: 10, border: 'none', background: (!selectedVoix || !texte.trim() || tooLong || generating) ? `${STUDIA_COLOR}40` : STUDIA_COLOR, color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: (!selectedVoix || !texte.trim() || tooLong || generating) ? 'not-allowed' : 'pointer' }}>
+                  {generating ? '⏳ Génération en cours (5-90s)...' : "🎙️ Générer l'audio"}
+                </button>
+                {generating && (
+                  <p style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 10, textAlign: 'center', fontStyle: 'italic', lineHeight: 1.5 }}>
+                    1er appel à froid : ~60-90s. Appels suivants : ~5-15s. Patience ☕
+                  </p>
+                )}
               </>
             )}
           </div>
@@ -595,19 +815,22 @@ function TabVoix({ project }) {
             <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
               <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>Audios générés ({audios.length})</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 360, overflowY: 'auto' }}>
-                {audios.slice(0, 5).map(a => (
-                  <div key={a.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 12 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6, gap: 8 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: STUDIA_COLOR }}>🎤 {a.voixName}</div>
-                        <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>{TON_OPTIONS.find(t => t.val === a.ton)?.label || a.ton} · {a.vitesse}x · {fmtTime(a.duration)}</div>
+                {audios.slice(0, 5).map(a => {
+                  const playbackUrl = a._blobUrl || (a.audioBase64 ? base64ToAudioBlobUrl(a.audioBase64) : a.audioData)
+                  return (
+                    <div key={a.id} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 12 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6, gap: 8 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: STUDIA_COLOR }}>🎤 {a.voixName}</div>
+                          <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>{TON_OPTIONS.find(t => t.val === a.ton)?.label || a.ton} · {a.vitesse}x · {fmtTime(a.duration)}</div>
+                        </div>
+                        <button onClick={() => supprimerAudio(a.id)} style={{ padding: '4px 6px', borderRadius: 6, border: 'none', background: 'transparent', color: 'rgba(237,232,219,0.3)', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}>✕</button>
                       </div>
-                      <button onClick={() => supprimerAudio(a.id)} style={{ padding: '4px 6px', borderRadius: 6, border: 'none', background: 'transparent', color: 'rgba(237,232,219,0.3)', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}>✕</button>
+                      <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.6)', margin: '0 0 8px', lineHeight: 1.5, fontStyle: 'italic' }}>"{a.texte}{a.texte.length >= 200 ? '...' : ''}"</p>
+                      {playbackUrl && <audio src={playbackUrl} controls style={{ width: '100%', height: 30 }} />}
                     </div>
-                    <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.6)', margin: '0 0 8px', lineHeight: 1.5, fontStyle: 'italic' }}>"{a.texte}{a.texte.length >= 200 ? '...' : ''}"</p>
-                    <audio src={a.audioData} controls style={{ width: '100%', height: 30 }} />
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           )}
@@ -768,9 +991,8 @@ function AnnotationModal({ timestamp, onSave, onClose }) {
 function TabCinema({ project }) {
   const annotationsKey = `pilotage_studia_annotations_${project.id}`
   const sceneEditsKey = `pilotage_studia_scene_edits_${project.id}`
-  const voixKey = `pilotage_studia_voix_${project.id}`
 
-  const [scripts, setScripts] = useState([])  // Liste des scripts du projet (depuis backend)
+  const [scripts, setScripts] = useState([])
   const [loadingList, setLoadingList] = useState(false)
   const [annotations, setAnnotations] = useState(() => { try { return JSON.parse(localStorage.getItem(annotationsKey)) || {} } catch { return {} } })
   const [sceneEdits, setSceneEdits] = useState(() => { try { return JSON.parse(localStorage.getItem(sceneEditsKey)) || {} } catch { return {} } })
@@ -797,7 +1019,6 @@ function TabCinema({ project }) {
   const [pausedAt, setPausedAt] = useState(0)
   const videoRef = useRef(null)
 
-  // Charger la liste des scripts depuis backend au changement de projet
   const refreshScripts = async () => {
     setLoadingList(true)
     try {
@@ -810,18 +1031,25 @@ function TabCinema({ project }) {
     setLoadingList(false)
   }
 
+  // Charge la liste des voix depuis backend (au lieu de localStorage)
+  const refreshVoixDispo = async () => {
+    try {
+      const result = await listVoixIA(project.id)
+      setVoixDispo((result.voix || []).filter(v => v.status === 'ready'))
+    } catch (err) {
+      console.error('Erreur chargement voix dispo:', err)
+      setVoixDispo([])
+    }
+  }
+
   useEffect(() => {
     refreshScripts()
+    refreshVoixDispo()
     try { setAnnotations(JSON.parse(localStorage.getItem(annotationsKey)) || {}) } catch { setAnnotations({}) }
     try { setSceneEdits(JSON.parse(localStorage.getItem(sceneEditsKey)) || {}) } catch { setSceneEdits({}) }
-    try {
-      const v = JSON.parse(localStorage.getItem(voixKey)) || []
-      setVoixDispo(v.filter(x => x.status === 'ready'))
-    } catch { setVoixDispo([]) }
     setActiveScript(null); setVideoUrl(null)
   }, [project.id])
 
-  // Régénère la vidéo mockée quand on change de script actif
   useEffect(() => {
     let cancelled = false
     if (activeScript) {
@@ -857,7 +1085,6 @@ function TabCinema({ project }) {
     setGenerating(true); setGenPhase(0); setErrorMsg(null); setSuccessMsg(null)
 
     try {
-      // Phase 1 (réelle) — Génération du script via Claude API
       setGenPhase(0)
       const v = voixDispo.find(x => x.id === voixId)
       const result = await genererScriptIA({
@@ -870,16 +1097,12 @@ function TabCinema({ project }) {
         voixName: v?.name || null,
       })
 
-      // Phases 2-5 (mockées en attendant agents voix/image/montage)
       for (let i = 1; i < PHASES_VIDEO.length; i++) {
         setGenPhase(i)
         await new Promise(r => setTimeout(r, PHASES_VIDEO[i].mockMs))
       }
 
-      // Recharger la liste depuis backend pour voir le nouveau script
       await refreshScripts()
-
-      // Activer automatiquement le script fraîchement généré
       setActiveScript(result)
       setTitre(''); setSujet('')
       showSuccess(`✨ Script généré (${result.scenes?.length || 0} scènes)`)
@@ -950,7 +1173,6 @@ function TabCinema({ project }) {
     }
   }
 
-  // Récupère les scènes du script actif, en fusionnant avec les éditions locales
   const getScenesFromScript = (script) => {
     if (!script || !script.scenes_json?.scenes) return script?.scenes || []
     const baseScenes = script.scenes_json.scenes
@@ -974,7 +1196,6 @@ function TabCinema({ project }) {
     <>
       {showAnnotModal && <AnnotationModal timestamp={pausedAt} onSave={sauvegarderAnnotation} onClose={() => setShowAnnotModal(false)} />}
 
-      {/* Messages */}
       {errorMsg && (
         <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', fontSize: 12, color: '#C75B4E', marginBottom: 14 }}>
           {errorMsg}
@@ -989,7 +1210,6 @@ function TabCinema({ project }) {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 20 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-          {/* Form Brief */}
           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
             <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>📝 Brief vidéo</h3>
 
@@ -1062,14 +1282,13 @@ function TabCinema({ project }) {
                 )}
                 {genPhase > 0 && (
                   <p style={{ fontSize: 10, color: 'rgba(212,168,83,0.7)', marginTop: 8, textAlign: 'center', fontStyle: 'italic' }}>
-                    💡 Phases 2-5 simulées en attendant les agents voix/image/montage (Phases 3-7 backend)
+                    💡 Phases 2-5 simulées en attendant les agents image/montage (Phases 4-7 backend)
                   </p>
                 )}
               </div>
             )}
           </div>
 
-          {/* Lecteur vidéo */}
           <div style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, overflow: 'hidden' }}>
             {!activeScript ? (
               <div style={{ aspectRatio: '16 / 9', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', gap: 8 }}>
@@ -1103,7 +1322,6 @@ function TabCinema({ project }) {
             )}
           </div>
 
-          {/* Script structuré (scènes) */}
           {activeScript && currentScenes.length > 0 && (
             <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
@@ -1154,10 +1372,8 @@ function TabCinema({ project }) {
           )}
         </div>
 
-        {/* COLONNE DROITE */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-          {/* Liste scripts (depuis backend) */}
           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Scripts générés {scripts.length > 0 && `(${scripts.length})`}</h3>
@@ -1190,7 +1406,6 @@ function TabCinema({ project }) {
             )}
           </div>
 
-          {/* Annotations */}
           <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 16 }}>
             <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>📌 Annotations {currentAnnots.length > 0 && `(${currentAnnots.length})`}</h3>
             {!activeScript ? (
@@ -1228,7 +1443,6 @@ function TabCinema({ project }) {
 // ── ONGLET 4 : SHORTS ─────────────────────────────────────────────
 function TabShorts({ project }) {
   const shortsKey = `pilotage_studia_shorts_${project.id}`
-  const voixKey = `pilotage_studia_voix_${project.id}`
   const [shorts, setShorts] = useState(() => { try { return JSON.parse(localStorage.getItem(shortsKey)) || [] } catch { return [] } })
   const [voixDispo, setVoixDispo] = useState([])
 
@@ -1241,12 +1455,18 @@ function TabShorts({ project }) {
 
   const [shortVideoUrls, setShortVideoUrls] = useState({})
 
+  const refreshVoixDispo = async () => {
+    try {
+      const result = await listVoixIA(project.id)
+      setVoixDispo((result.voix || []).filter(v => v.status === 'ready'))
+    } catch {
+      setVoixDispo([])
+    }
+  }
+
   useEffect(() => {
     try { setShorts(JSON.parse(localStorage.getItem(shortsKey)) || []) } catch { setShorts([]) }
-    try {
-      const v = JSON.parse(localStorage.getItem(voixKey)) || []
-      setVoixDispo(v.filter(x => x.status === 'ready'))
-    } catch { setVoixDispo([]) }
+    refreshVoixDispo()
   }, [project.id])
 
   useEffect(() => {
