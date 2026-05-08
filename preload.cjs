@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Gestion des images generees
     exportImage:         (params)   => ipcRenderer.invoke('studia:exportImage', params),
     deleteImage:         (fileUrl)  => ipcRenderer.invoke('studia:deleteImage', fileUrl),
+    openImage:           (fileUrl)  => ipcRenderer.invoke('studia:openImage', fileUrl),
     revealImagesFolder:  ()         => ipcRenderer.invoke('studia:revealImagesFolder'),
   },
 })

@@ -897,7 +897,18 @@ ipcMain.handle('studia:revealImagesFolder', async () => {
   shell.openPath(STUDIA_IMAGES_DIR)
   return { success: true, path: STUDIA_IMAGES_DIR }
 })
-
+// Ouvrir une image generee avec l'application par defaut Windows
+ipcMain.handle('studia:openImage', async (event, fileUrl) => {
+  if (!fileUrl?.startsWith('file://')) return { success: false, error: 'URL invalide' }
+  try {
+    const localPath = fileUrl.replace(/^file:\/\//, '')
+    if (!fs.existsSync(localPath)) return { success: false, error: 'Fichier introuvable' }
+    await shell.openPath(localPath)
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
 // Supprimer une image generee
 ipcMain.handle('studia:deleteImage', async (event, fileUrl) => {
   if (!fileUrl?.startsWith('file://')) return { success: false, error: 'URL invalide' }
