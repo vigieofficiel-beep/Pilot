@@ -1047,6 +1047,10 @@ function TabVoix({ project }) {
                           <div style={{ fontSize: 11, fontWeight: 700, color: STUDIA_COLOR }}>🎤 {a.voixName}</div>
                           <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', marginTop: 2 }}>{TON_OPTIONS.find(t => t.val === a.ton)?.label || a.ton} · {a.vitesse}x · {fmtTime(a.duration)}</div>
                         </div>
+                        <button onClick={() => {
+                          const dataUrl = `data:audio/wav;base64,${a.audioBase64}`
+                          downloadDataUrl(dataUrl, `${slugify(a.voixName)}-${slugify(a.texte.slice(0, 40))}-${a.id}.wav`)
+                        }} title="Télécharger en WAV" style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid rgba(127,119,221,0.3)', background: 'transparent', color: STUDIA_COLOR, fontSize: 11, cursor: 'pointer', flexShrink: 0 }}>📥</button>
                         <button onClick={() => supprimerAudio(a.id)} style={{ padding: '4px 6px', borderRadius: 6, border: 'none', background: 'transparent', color: 'rgba(237,232,219,0.3)', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}>✕</button>
                       </div>
                       <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.6)', margin: '0 0 8px', lineHeight: 1.5, fontStyle: 'italic' }}>"{a.texte}{a.texte.length >= 200 ? '...' : ''}"</p>
