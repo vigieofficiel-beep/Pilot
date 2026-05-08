@@ -1,7 +1,10 @@
-const { app, BrowserWindow, ipcMain, session, net } = require('electron')
+const { app, BrowserWindow, ipcMain, session, net, dialog, shell } = require('electron')
 const path = require('path')
 const crypto = require('crypto')
 const fs = require('fs')
+const https = require('https')
+const http = require('http')
+const { URL } = require('url')
 
 let mainWindow
 let browserWindows = {}
@@ -521,6 +524,396 @@ ipcMain.handle('youtube-overlay', async (event, { channelUrl, apiKey }) => {
   })
 
   return { success: true }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STUD'IA IMAGES - GPT IMAGE 1 (OpenAI) - Pattern adapte de GeoWorld V3.1
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// 2 modes :
+//  - generate : prompt seul (texte -> image)            ~$0.04 / image (1024x1024)
+//  - edit     : photo + prompt (img2img)                ~$0.06 / image (1024x1024)
+//
+// Stockage local :
+//  - openai-config.json  : cle API utilisateur (BYOK)
+//  - studia-usage.json   : compteur cumule + historique
+//  - studia-images/      : fichiers PNG generes
+//
+// La cle API ne transite jamais par un serveur Doppler.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const USER_DATA_DIR = app.getPath('userData')
+const OPENAI_KEY_FILE = path.join(USER_DATA_DIR, 'openai-config.json')
+const STUDIA_USAGE_FILE = path.join(USER_DATA_DIR, 'studia-usage.json')
+const STUDIA_IMAGES_DIR = path.join(USER_DATA_DIR, 'studia-images')
+
+try { if (!fs.existsSync(STUDIA_IMAGES_DIR)) fs.mkdirSync(STUDIA_IMAGES_DIR, { recursive: true }) } catch {}
+
+function loadOpenAIConfig() {
+  if (fs.existsSync(OPENAI_KEY_FILE)) {
+    try { return JSON.parse(fs.readFileSync(OPENAI_KEY_FILE, 'utf8')) }
+    catch { return {} }
+  }
+  return {}
+}
+
+function saveOpenAIConfig(config) {
+  fs.writeFileSync(OPENAI_KEY_FILE, JSON.stringify(config, null, 2), 'utf8')
+}
+
+function loadStudiaUsage() {
+  if (fs.existsSync(STUDIA_USAGE_FILE)) {
+    try { return JSON.parse(fs.readFileSync(STUDIA_USAGE_FILE, 'utf8')) }
+    catch { return { totalSpent: 0, generations: [] } }
+  }
+  return { totalSpent: 0, generations: [] }
+}
+
+function saveStudiaUsage(usage) {
+  fs.writeFileSync(STUDIA_USAGE_FILE, JSON.stringify(usage, null, 2), 'utf8')
+}
+
+// Helper : telechargement HTTP avec User-Agent et suivi des redirections
+function fetchWithRedirects(url, redirectsLeft = 5) {
+  return new Promise((resolve, reject) => {
+    let parsedUrl
+    try { parsedUrl = new URL(url) } catch (e) {
+      return reject(new Error('URL invalide: ' + url))
+    }
+    const protocol = parsedUrl.protocol === 'https:' ? https : http
+
+    const options = {
+      hostname: parsedUrl.hostname,
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Pilot-Doppler/1.0',
+        'Accept': 'image/*,*/*'
+      }
+    }
+
+    const req = protocol.request(options, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
+        let nextUrl = res.headers.location
+        if (nextUrl.startsWith('/')) {
+          nextUrl = `${parsedUrl.protocol}//${parsedUrl.hostname}${nextUrl}`
+        }
+        return fetchWithRedirects(nextUrl, redirectsLeft - 1).then(resolve).catch(reject)
+      }
+      if (res.statusCode !== 200) {
+        return reject(new Error(`HTTP ${res.statusCode} sur ${parsedUrl.hostname}`))
+      }
+      const chunks = []
+      res.on('data', c => chunks.push(c))
+      res.on('end', () => resolve(Buffer.concat(chunks)))
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+// Verifier si la cle API est configuree
+ipcMain.handle('studia:hasOpenAIKey', async () => {
+  const cfg = loadOpenAIConfig()
+  return !!cfg.apiKey
+})
+
+// Stocker la cle API
+ipcMain.handle('studia:setOpenAIKey', async (event, apiKey) => {
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.startsWith('sk-')) {
+    return { success: false, error: 'Cle invalide (doit commencer par sk-)' }
+  }
+  const cfg = loadOpenAIConfig()
+  cfg.apiKey = apiKey.trim()
+  cfg.savedAt = new Date().toISOString()
+  saveOpenAIConfig(cfg)
+  return { success: true }
+})
+
+// Supprimer la cle
+ipcMain.handle('studia:clearOpenAIKey', async () => {
+  saveOpenAIConfig({})
+  return { success: true }
+})
+
+// Recuperer les stats d'usage cumulees
+ipcMain.handle('studia:getUsage', async () => loadStudiaUsage())
+
+// Reinitialiser le compteur d'usage
+ipcMain.handle('studia:resetUsage', async () => {
+  saveStudiaUsage({ totalSpent: 0, generations: [] })
+  return { success: true }
+})
+
+// Generer une image GPT (txt2img ou img2img)
+// Params attendus :
+//   { projectId, prompt, mode, photoDataUrl?, size? }
+//   - mode = 'generate' (txt2img) ou 'edit' (img2img)
+//   - photoDataUrl : data URL base64 si mode='edit' (uploaded depuis le renderer)
+//   - size : '1024x1024' (defaut), '1536x1024' (paysage), '1024x1536' (portrait)
+ipcMain.handle('studia:generateImage', async (event, params) => {
+  const cfg = loadOpenAIConfig()
+  if (!cfg.apiKey) {
+    return { success: false, error: 'Cle API OpenAI non configuree' }
+  }
+
+  const {
+    projectId = 'default',
+    prompt,
+    mode = 'generate',
+    photoDataUrl = null,
+    size = '1024x1024'
+  } = params || {}
+
+  if (!prompt || typeof prompt !== 'string') {
+    return { success: false, error: 'Prompt manquant' }
+  }
+
+  try {
+    let resultBuffer = null
+    let cost = 0
+
+    if (mode === 'edit' && photoDataUrl) {
+      // ---- Mode IMG2IMG : POST /v1/images/edits (multipart) ----
+
+      // Decoder le dataURL recu du renderer
+      const m = photoDataUrl.match(/^data:([^;]+);base64,(.+)$/)
+      if (!m) return { success: false, error: 'Format image invalide (attendu : data:image/...;base64,...)' }
+      const mimeType = m[1]
+      const imgBuffer = Buffer.from(m[2], 'base64')
+
+      // Determiner extension/filename (OpenAI accepte png, jpg, webp)
+      const extMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/webp': 'webp' }
+      const ext = extMap[mimeType] || 'png'
+
+      // Construction multipart manuelle (pas de dependance externe)
+      const boundary = '----PilotFormBoundary' + Date.now().toString(16)
+      const CRLF = '\r\n'
+
+      function partText(name, value) {
+        return Buffer.from(
+          `--${boundary}${CRLF}` +
+          `Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}` +
+          `${value}${CRLF}`,
+          'utf8'
+        )
+      }
+
+      function partFile(name, filename, contentType, buf) {
+        return Buffer.concat([
+          Buffer.from(
+            `--${boundary}${CRLF}` +
+            `Content-Disposition: form-data; name="${name}"; filename="${filename}"${CRLF}` +
+            `Content-Type: ${contentType}${CRLF}${CRLF}`,
+            'utf8'
+          ),
+          buf,
+          Buffer.from(CRLF, 'utf8')
+        ])
+      }
+
+      const bodyParts = [
+        partText('model', 'gpt-image-1'),
+        partFile('image', `ref.${ext}`, mimeType, imgBuffer),
+        partText('prompt', prompt),
+        partText('size', size),
+        partText('n', '1'),
+        Buffer.from(`--${boundary}--${CRLF}`, 'utf8')
+      ]
+      const bodyBuf = Buffer.concat(bodyParts)
+
+      const apiResp = await new Promise((resolve, reject) => {
+        const req = https.request({
+          hostname: 'api.openai.com',
+          path: '/v1/images/edits',
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${cfg.apiKey}`,
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+            'Content-Length': bodyBuf.length
+          },
+          timeout: 120000
+        }, (res) => {
+          const chunks = []
+          res.on('data', c => chunks.push(c))
+          res.on('end', () => {
+            try {
+              const data = JSON.parse(Buffer.concat(chunks).toString())
+              if (res.statusCode !== 200) {
+                reject(new Error(data.error?.message || `HTTP ${res.statusCode}`))
+              } else {
+                resolve(data)
+              }
+            } catch (e) {
+              reject(new Error('Reponse JSON invalide'))
+            }
+          })
+        })
+        req.on('error', reject)
+        req.on('timeout', () => { req.destroy(); reject(new Error('Timeout OpenAI (120s)')) })
+        req.write(bodyBuf)
+        req.end()
+      })
+
+      const imgData = apiResp.data?.[0]
+      if (!imgData) throw new Error("Pas d'image dans la reponse")
+
+      if (imgData.b64_json) {
+        resultBuffer = Buffer.from(imgData.b64_json, 'base64')
+      } else if (imgData.url) {
+        resultBuffer = await fetchWithRedirects(imgData.url)
+      } else {
+        throw new Error('Format de reponse OpenAI inconnu')
+      }
+
+      cost = 0.06
+
+    } else {
+      // ---- Mode TXT2IMG : POST /v1/images/generations ----
+
+      const body = JSON.stringify({
+        model: 'gpt-image-1',
+        prompt,
+        size,
+        n: 1
+      })
+
+      const apiResp = await new Promise((resolve, reject) => {
+        const req = https.request({
+          hostname: 'api.openai.com',
+          path: '/v1/images/generations',
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${cfg.apiKey}`,
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body)
+          },
+          timeout: 120000
+        }, (res) => {
+          const chunks = []
+          res.on('data', c => chunks.push(c))
+          res.on('end', () => {
+            try {
+              const data = JSON.parse(Buffer.concat(chunks).toString())
+              if (res.statusCode !== 200) {
+                reject(new Error(data.error?.message || `HTTP ${res.statusCode}`))
+              } else {
+                resolve(data)
+              }
+            } catch (e) {
+              reject(new Error('Reponse JSON invalide'))
+            }
+          })
+        })
+        req.on('error', reject)
+        req.on('timeout', () => { req.destroy(); reject(new Error('Timeout OpenAI (120s)')) })
+        req.write(body)
+        req.end()
+      })
+
+      const imgData = apiResp.data?.[0]
+      if (!imgData) throw new Error("Pas d'image dans la reponse")
+
+      if (imgData.b64_json) {
+        resultBuffer = Buffer.from(imgData.b64_json, 'base64')
+      } else if (imgData.url) {
+        resultBuffer = await fetchWithRedirects(imgData.url)
+      } else {
+        throw new Error('Format de reponse OpenAI inconnu')
+      }
+
+      cost = 0.04
+    }
+
+    // Sauvegarder localement
+    const filename = `${projectId}-${mode}-${Date.now()}.png`
+    const filepath = path.join(STUDIA_IMAGES_DIR, filename)
+    fs.writeFileSync(filepath, resultBuffer)
+    const fileUrl = `file://${filepath.replace(/\\/g, '/')}`
+    const dataUrl = `data:image/png;base64,${resultBuffer.toString('base64')}`
+
+    // Mettre a jour les stats d'usage
+    const usage = loadStudiaUsage()
+    usage.totalSpent = (usage.totalSpent || 0) + cost
+    usage.generations = usage.generations || []
+    usage.generations.unshift({
+      projectId,
+      mode,
+      cost,
+      prompt: prompt.slice(0, 200),
+      filename,
+      fileUrl,
+      timestamp: new Date().toISOString()
+    })
+    if (usage.generations.length > 500) usage.generations = usage.generations.slice(0, 500)
+    saveStudiaUsage(usage)
+
+    return {
+      success: true,
+      fileUrl,
+      dataUrl,
+      filename,
+      filepath,
+      cost,
+      totalSpent: usage.totalSpent,
+      mode
+    }
+
+  } catch (err) {
+    console.error('[studia:generateImage] erreur:', err)
+    return { success: false, error: err.message || String(err) }
+  }
+})
+
+// Telecharger une image generee vers un emplacement choisi par l'utilisateur
+ipcMain.handle('studia:exportImage', async (event, params) => {
+  const { sourceFileUrl, suggestedName } = params || {}
+  if (!sourceFileUrl) return { success: false, error: 'sourceFileUrl manquant' }
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Exporter l'image",
+    defaultPath: suggestedName || `pilot-image-${Date.now()}.png`,
+    filters: [
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] },
+      { name: 'Tous les fichiers', extensions: ['*'] }
+    ]
+  })
+  if (result.canceled || !result.filePath) return { success: false, canceled: true }
+
+  try {
+    if (sourceFileUrl.startsWith('file://')) {
+      const localPath = sourceFileUrl.replace(/^file:\/\//, '')
+      fs.copyFileSync(localPath, result.filePath)
+      return { success: true, path: result.filePath }
+    }
+    return { success: false, error: 'URL non supportee (file:// requis)' }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// Ouvrir le dossier studia-images dans l'explorateur
+ipcMain.handle('studia:revealImagesFolder', async () => {
+  shell.openPath(STUDIA_IMAGES_DIR)
+  return { success: true, path: STUDIA_IMAGES_DIR }
+})
+
+// Supprimer une image generee
+ipcMain.handle('studia:deleteImage', async (event, fileUrl) => {
+  if (!fileUrl?.startsWith('file://')) return { success: false, error: 'URL invalide' }
+  try {
+    const localPath = fileUrl.replace(/^file:\/\//, '')
+    if (localPath.startsWith(STUDIA_IMAGES_DIR) && fs.existsSync(localPath)) {
+      fs.unlinkSync(localPath)
+    }
+    // Retirer aussi de l'historique
+    const usage = loadStudiaUsage()
+    usage.generations = (usage.generations || []).filter(g => g.fileUrl !== fileUrl)
+    saveStudiaUsage(usage)
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
 })
 
 // -- LIFECYCLE -----------------------------------------------------------
