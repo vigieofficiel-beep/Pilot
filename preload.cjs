@@ -38,4 +38,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openImage:           (fileUrl)  => ipcRenderer.invoke('studia:openImage', fileUrl),
     revealImagesFolder:  ()         => ipcRenderer.invoke('studia:revealImagesFolder'),
   },
+
+  // Google Drive OAuth (BYOK pure - tokens stockes en local Electron)
+  drive: {
+    isConfigured:        ()        => ipcRenderer.invoke('drive:isConfigured'),
+    isConnected:         ()        => ipcRenderer.invoke('drive:isConnected'),
+    getConnectedAccount: ()        => ipcRenderer.invoke('drive:getConnectedAccount'),
+    saveClientSecret:    (json)    => ipcRenderer.invoke('drive:saveClientSecret', json),
+    startOAuthFlow:      ()        => ipcRenderer.invoke('drive:startOAuthFlow'),
+    disconnect:          ()        => ipcRenderer.invoke('drive:disconnect'),
+    // params = { folderPath: string[], filename: string, contentBase64: string, mimeType: string }
+    uploadFile:          (params)  => ipcRenderer.invoke('drive:uploadFile', params),
+  },
 })

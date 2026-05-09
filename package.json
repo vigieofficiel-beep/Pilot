@@ -17,6 +17,8 @@
   "dependencies": {
     "concurrently": "^9.2.1",
     "electron-store": "^11.0.2",
+    "googleapis": "^171.4.0",
+    "open": "^11.0.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "wait-on": "^9.0.4"

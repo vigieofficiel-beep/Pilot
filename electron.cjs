@@ -5,6 +5,7 @@ const fs = require('fs')
 const https = require('https')
 const http = require('http')
 const { URL } = require('url')
+const driveModule = require('./drive.cjs')
 
 let mainWindow
 let browserWindows = {}
@@ -925,6 +926,51 @@ ipcMain.handle('studia:deleteImage', async (event, fileUrl) => {
   } catch (err) {
     return { success: false, error: err.message }
   }
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GOOGLE DRIVE OAUTH (Phase 4c) - BYOK pure
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Tokens stockes dans userData/google-oauth.json (jamais sur VPS Doppler).
+// Le client_secret JSON Google est dans userData/google-client-secret.json.
+//
+// Workflow utilisateur :
+//  1. drive:isConfigured  -> verifie que google-client-secret.json existe
+//  2. drive:isConnected   -> verifie qu'un token utilisateur est present
+//  3. drive:startOAuthFlow -> lance le flow OAuth loopback (1er login)
+//  4. drive:uploadFile    -> upload un fichier dans Drive sous Pilot/{projectId}/...
+//  5. drive:disconnect    -> revoque le token et supprime le fichier
+//
+// Toute la logique est dans drive.cjs.
+// ═══════════════════════════════════════════════════════════════════════════
+
+ipcMain.handle('drive:isConfigured', async () => {
+  return driveModule.isConfigured()
+})
+
+ipcMain.handle('drive:isConnected', async () => {
+  return driveModule.isConnected()
+})
+
+ipcMain.handle('drive:getConnectedAccount', async () => {
+  return await driveModule.getConnectedAccount()
+})
+
+ipcMain.handle('drive:saveClientSecret', async (event, jsonContent) => {
+  return driveModule.saveClientSecret(jsonContent)
+})
+
+ipcMain.handle('drive:startOAuthFlow', async () => {
+  return await driveModule.startOAuthFlow()
+})
+
+ipcMain.handle('drive:disconnect', async () => {
+  return await driveModule.disconnect()
+})
+
+ipcMain.handle('drive:uploadFile', async (event, args) => {
+  return await driveModule.uploadFile(args)
 })
 
 // -- LIFECYCLE -----------------------------------------------------------
