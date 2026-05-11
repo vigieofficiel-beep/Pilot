@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import DriveModal from './DriveModal'
 
 const STUDIA_COLOR = '#7F77DD'
 const AGENTS_API_URL = 'https://agents.vigie-officiel.com'
@@ -1084,6 +1085,12 @@ function TabImages({ project }) {
   const [copiedId, setCopiedId] = useState(null)
   const [filter, setFilter] = useState('all')
 
+  // Drive OAuth
+  const [showDriveModal, setShowDriveModal] = useState(false)
+  const [driveConnected, setDriveConnected] = useState(false)
+  const [driveAccount, setDriveAccount] = useState(null)
+  const [uploadingDrive, setUploadingDrive] = useState({})
+
   const showError = (msg, dur = 8000) => { setErrorMsg(msg); setTimeout(() => setErrorMsg(null), dur) }
   const showSuccess = (msg, dur = 4000) => { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(null), dur) }
 
@@ -1099,12 +1106,78 @@ function TabImages({ project }) {
     setKeyChecked(true)
   }
 
+  const refreshDriveStatus = async () => {
+    try {
+      const cfg = await window.electronAPI.drive.isConfigured()
+      if (!cfg) { setDriveConnected(false); setDriveAccount(null); return }
+      const conn = await window.electronAPI.drive.isConnected()
+      setDriveConnected(conn)
+      if (conn) {
+        const acc = await window.electronAPI.drive.getConnectedAccount()
+        setDriveAccount(acc)
+      } else {
+        setDriveAccount(null)
+      }
+    } catch (err) {
+      console.error('[Drive] refreshDriveStatus error:', err)
+    }
+  }
+
   useEffect(() => {
     refreshKeyAndUsage()
+    refreshDriveStatus()
     try { setImages(JSON.parse(localStorage.getItem(storageKey)) || []) } catch { setImages([]) }
   }, [project.id])
 
   const persist = (arr) => { localStorage.setItem(storageKey, JSON.stringify(arr)); setImages(arr) }
+
+  const uploadVersDrive = async (img) => {
+    if (!driveConnected) {
+      setShowDriveModal(true)
+      return
+    }
+    setUploadingDrive(prev => ({ ...prev, [img.id]: true }))
+    try {
+      let contentBase64 = null
+      if (img.dataUrl) {
+        contentBase64 = img.dataUrl.replace(/^data:image\/[^;]+;base64,/, '')
+      } else if (img.fileUrl) {
+        const response = await fetch(img.fileUrl)
+        const blob = await response.blob()
+        contentBase64 = await new Promise((resolve) => {
+          const reader = new FileReader()
+          reader.onloadend = () => resolve(reader.result.split(',')[1])
+          reader.readAsDataURL(blob)
+        })
+      } else {
+        throw new Error('Aucune source image disponible')
+      }
+      const date = new Date().toISOString().slice(0, 10)
+      const promptSlug = slugify(img.prompt.slice(0, 40))
+      const filename = `${date}_${promptSlug}_${img.id}.png`
+      const folderPath = ['Pilot', project.id, "Stud'IA", 'Images']
+      const result = await window.electronAPI.drive.uploadFile({
+        folderPath,
+        filename,
+        contentBase64,
+        mimeType: 'image/png',
+      })
+      if (result.success) {
+        showSuccess(`☁️ Uploade sur Drive : ${result.filename}`, 6000)
+        const updated = images.map(i => i.id === img.id ? { ...i, driveUrl: result.webViewLink, driveFileId: result.fileId } : i)
+        persist(updated)
+      } else {
+        showError(`❌ Erreur upload Drive : ${result.error}`)
+      }
+    } catch (err) {
+      showError(`❌ Erreur upload : ${err.message}`)
+    }
+    setUploadingDrive(prev => {
+      const copy = { ...prev }
+      delete copy[img.id]
+      return copy
+    })
+  }
 
   const handleFileSelected = async (event) => {
     const file = event.target.files?.[0]
@@ -1289,6 +1362,12 @@ function TabImages({ project }) {
           onSaved={() => { setShowKeyModal(false); refreshKeyAndUsage(); showSuccess('🔑 Cle API enregistree') }}
         />
       )}
+      {showDriveModal && (
+        <DriveModal
+          onClose={() => setShowDriveModal(false)}
+          onChanged={refreshDriveStatus}
+        />
+      )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
@@ -1349,25 +1428,33 @@ function TabImages({ project }) {
                 {' · '}
                 <span style={{ color: 'rgba(237,232,219,0.4)' }}>{usage.generations?.length || 0} images</span>
               </span>
-              <div style={{ display: 'flex', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 {hasKey ? (
-                  <button onClick={() => setShowKeyModal(true)} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(237,232,219,0.6)', fontSize: 10, cursor: 'pointer' }} title="Modifier la cle">
-                    🔑 Cle ✓
+                  <button onClick={() => setShowKeyModal(true)} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(237,232,219,0.6)', fontSize: 10, cursor: 'pointer' }} title="Modifier la cle OpenAI">
+                    🔑 OpenAI ✓
                   </button>
                 ) : (
                   <button onClick={() => setShowKeyModal(true)} style={{ padding: '4px 10px', borderRadius: 6, border: `1px solid ${STUDIA_COLOR}`, background: `${STUDIA_COLOR}20`, color: STUDIA_COLOR, fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>
-                    🔑 Configurer cle API
+                    🔑 Configurer OpenAI
                   </button>
                 )}
+                <button onClick={() => setShowDriveModal(true)} style={{ padding: '4px 10px', borderRadius: 6, border: driveConnected ? '1px solid rgba(91,199,138,0.3)' : '1px solid rgba(255,255,255,0.1)', background: driveConnected ? 'rgba(91,199,138,0.08)' : 'transparent', color: driveConnected ? '#5BC78A' : 'rgba(237,232,219,0.6)', fontSize: 10, fontWeight: 700, cursor: 'pointer' }} title={driveConnected ? `Drive : ${driveAccount?.email}` : 'Configurer Google Drive'}>
+                  {driveConnected ? '☁️ Drive ✓' : '☁️ Drive'}
+                </button>
                 <a href="https://platform.openai.com/usage" target="_blank" rel="noopener noreferrer" style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(237,232,219,0.5)', fontSize: 10, cursor: 'pointer', textDecoration: 'none' }}>
-                  Voir solde OpenAI ↗
+                  Solde OpenAI ↗
                 </a>
               </div>
             </div>
           )}
           {engine === 'flux' && (
-            <div style={{ marginTop: 14, padding: '10px 12px', background: 'rgba(0,0,0,0.2)', borderRadius: 8, fontSize: 11, color: 'rgba(237,232,219,0.5)' }}>
-              ⚡ FLUX tourne sur RunPod (GPU a la demande). 1er appel cold boot ~60-180s, puis ~5-15s. Tu peux suivre la conso sur <a href="https://console.runpod.io" target="_blank" rel="noopener noreferrer" style={{ color: STUDIA_COLOR }}>console.runpod.io</a>
+            <div style={{ marginTop: 14, padding: '10px 12px', background: 'rgba(0,0,0,0.2)', borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, fontSize: 11, color: 'rgba(237,232,219,0.5)' }}>
+              <span style={{ flex: 1, minWidth: 200 }}>
+                ⚡ FLUX tourne sur RunPod (GPU a la demande). 1er appel cold boot ~60-180s, puis ~5-15s. Suivi conso : <a href="https://console.runpod.io" target="_blank" rel="noopener noreferrer" style={{ color: STUDIA_COLOR }}>console.runpod.io</a>
+              </span>
+              <button onClick={() => setShowDriveModal(true)} style={{ padding: '4px 10px', borderRadius: 6, border: driveConnected ? '1px solid rgba(91,199,138,0.3)' : '1px solid rgba(255,255,255,0.1)', background: driveConnected ? 'rgba(91,199,138,0.08)' : 'transparent', color: driveConnected ? '#5BC78A' : 'rgba(237,232,219,0.6)', fontSize: 10, fontWeight: 700, cursor: 'pointer' }} title={driveConnected ? `Drive : ${driveAccount?.email}` : 'Configurer Google Drive'}>
+                {driveConnected ? '☁️ Drive ✓' : '☁️ Drive'}
+              </button>
             </div>
           )}
         </div>
@@ -1501,6 +1588,7 @@ function TabImages({ project }) {
                         <div style={{ display: 'flex', gap: 4 }}>
                           {img.fileUrl && <button onClick={() => window.electronAPI.studia.openImage(img.fileUrl)} title="Ouvrir l'image" style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.1)', color: '#EDE8DB', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>🖼️</button>}
                           <button onClick={() => telecharger(img)} title="Telecharger" style={{ flex: 1, padding: '6px', borderRadius: 6, border: 'none', background: STUDIA_COLOR, color: '#0D1B2A', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>📥</button>
+                          <button onClick={() => uploadVersDrive(img)} disabled={uploadingDrive[img.id]} title={img.driveUrl ? `Deja sur Drive : ${img.driveUrl}` : 'Uploader sur Google Drive'} style={{ flex: 1, padding: '6px', borderRadius: 6, border: img.driveUrl ? '1px solid rgba(91,199,138,0.4)' : '1px solid rgba(255,255,255,0.2)', background: img.driveUrl ? 'rgba(91,199,138,0.2)' : 'rgba(255,255,255,0.1)', color: img.driveUrl ? '#5BC78A' : '#EDE8DB', fontSize: 10, fontWeight: 700, cursor: uploadingDrive[img.id] ? 'wait' : 'pointer', opacity: uploadingDrive[img.id] ? 0.5 : 1 }}>{uploadingDrive[img.id] ? '⏳' : (img.driveUrl ? '☁️✓' : '☁️')}</button>
                           <button onClick={() => copierPrompt(img)} title="Copier prompt" style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.2)', background: copiedId === img.id ? '#5BC78A' : 'rgba(255,255,255,0.1)', color: copiedId === img.id ? '#0D1B2A' : '#EDE8DB', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>{copiedId === img.id ? '✓' : '📋'}</button>
                           <button onClick={() => supprimer(img)} title="Supprimer" style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(199,91,78,0.4)', background: 'rgba(199,91,78,0.2)', color: '#C75B4E', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>🗑️</button>
                         </div>
