@@ -370,14 +370,22 @@ async function generateVideoFal({ mode, modelId, resolution, prompt, durationSec
     body: JSON.stringify(payload),
   })
   if (!res.ok) throw new Error(await extractApiError(res))
-  return res.json()
+  const data = await res.json()
+  // v6 : la reponse inclut polling_namespace, on le retourne tel quel pour que le frontend le passe a /status
+  return data
 }
 
-async function checkVideoStatus({ requestId, modelId }) {
+async function checkVideoStatus({ requestId, modelId, pollingNamespace }) {
   const apiKey = getAgentsApiKey()
-  if (!apiKey) throw new Error('Cle Agents Doppler introuvable')
-  const url = `${AGENTS_API_URL}/studia/video/status/${requestId}?model_id=${encodeURIComponent(modelId)}`
-  const res = await fetch(url, { headers: { 'X-API-Key': apiKey } })
+  if (!apiKey) throw new Error('Cle Agents Doppler introuvable.')
+  const params = new URLSearchParams({ model_id: modelId })
+  if (pollingNamespace) {
+    params.set('polling_namespace', pollingNamespace)
+  }
+  const res = await fetch(`${AGENTS_API_URL}/studia/video/status/${requestId}?${params.toString()}`, {
+    method: 'GET',
+    headers: { 'X-API-Key': apiKey },
+  })
   if (!res.ok) throw new Error(await extractApiError(res))
   return res.json()
 }
@@ -2092,25 +2100,28 @@ function TabCinema({ project }) {
   )
 }
 
-// ── ONGLET 4 : SHORTS (Phase 6ter - T2V + I2V via fal.ai) ────────────
+// ── ONGLET 4 : SHORTS (Phase 6quater - multi-modeles fal.ai) ──────────
 function TabShorts({ project }) {
   const shortsKey = `pilotage_studia_shorts_${project.id}`
   const [shorts, setShorts] = useState(() => { try { return JSON.parse(localStorage.getItem(shortsKey)) || [] } catch { return [] } })
 
-  // Toggle 3 modes (eco/standard/premium)
+  // Toggle 3 modes
   const [mode, setMode] = useState('eco')
-  // Toggle type video (T2V = texte-to-video, I2V = image-to-video)
+  // Toggle T2V / I2V
   const [videoType, setVideoType] = useState('t2v')
+  // Modele selectionne dans le mode + type courant
+  const [selectedModelId, setSelectedModelId] = useState(null)
+
   const [models, setModels] = useState(null)
   const [loadingModels, setLoadingModels] = useState(true)
 
-  // Form T2V
+  // Form
   const [prompt, setPrompt] = useState('')
   const [aspectRatio, setAspectRatio] = useState('9:16')
   const [duration, setDuration] = useState(5)
 
-  // Form I2V
-  const [refImage, setRefImage] = useState(null)  // { dataUrl, name, sizeKB }
+  // I2V upload
+  const [refImage, setRefImage] = useState(null)
   const fileInputRef = useRef(null)
 
   // Generation state
@@ -2145,6 +2156,16 @@ function TabShorts({ project }) {
     try { setShorts(JSON.parse(localStorage.getItem(shortsKey)) || []) } catch { setShorts([]) }
   }, [project.id])
 
+  // Reset du modele selectionne quand on change de mode ou de type
+  useEffect(() => {
+    if (!models) return
+    const available = models[mode]?.[videoType] || []
+    const defaultModel = available.find(m => m.default) || available[0]
+    if (defaultModel) {
+      setSelectedModelId(defaultModel.id)
+    }
+  }, [mode, videoType, models])
+
   useEffect(() => () => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
     if (elapsedIntervalRef.current) clearInterval(elapsedIntervalRef.current)
@@ -2152,10 +2173,12 @@ function TabShorts({ project }) {
 
   const persist = (arr) => { localStorage.setItem(shortsKey, JSON.stringify(arr)); setShorts(arr) }
 
-  // Recupere le modele actif selon le mode + type
-  const currentModel = models?.[mode]?.[videoType]?.find(m => m.default) || models?.[mode]?.[videoType]?.[0]
+  // Liste des modeles disponibles pour mode + type courants
+  const availableModels = models?.[mode]?.[videoType] || []
+  // Modele actuellement selectionne (peut etre null brievement avant le useEffect)
+  const currentModel = availableModels.find(m => m.id === selectedModelId) || availableModels.find(m => m.default) || availableModels[0]
 
-  // ── Upload d'une image de reference ──────────────────────────────
+  // ── Upload image (I2V) ─────────────────────────────────────────────
   const handleImageSelected = async (event) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -2163,7 +2186,6 @@ function TabShorts({ project }) {
       showError('Le fichier doit etre une image (PNG, JPG, WEBP).')
       return
     }
-    // Limite : 10 Mo (fal.ai accepte jusqu'a 20 Mo mais autant rester safe)
     if (file.size > 10 * 1024 * 1024) {
       showError(`Image trop grosse (${(file.size / 1024 / 1024).toFixed(1)} Mo). Max 10 Mo.`)
       return
@@ -2185,7 +2207,7 @@ function TabShorts({ project }) {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  // ── Generation video ──────────────────────────────────────────────
+  // ── Generation ─────────────────────────────────────────────────────
   const generer = async () => {
     if (!prompt.trim() || generating || !currentModel) return
     if (prompt.trim().length < 10) {
@@ -2205,7 +2227,6 @@ function TabShorts({ project }) {
     elapsedIntervalRef.current = setInterval(() => setGenElapsed(e => e + 1), 1000)
 
     try {
-      // Payload : si I2V, on ajoute image_base64
       const payload = {
         mode,
         modelId: currentModel.id,
@@ -2216,16 +2237,21 @@ function TabShorts({ project }) {
         projectId: project.id,
       }
       if (videoType === 'i2v' && refImage) {
-        payload.imageBase64 = refImage.dataUrl  // data URL complete
+        payload.imageBase64 = refImage.dataUrl
       }
 
       const submitResult = await generateVideoFal(payload)
       const requestId = submitResult.request_id
       const estimatedCost = submitResult.estimated_cost_usd
+      const pollingNamespace = submitResult.polling_namespace  // v6 : explicite
 
       pollIntervalRef.current = setInterval(async () => {
         try {
-          const statusRes = await checkVideoStatus({ requestId, modelId: currentModel.id })
+          const statusRes = await checkVideoStatus({
+            requestId,
+            modelId: currentModel.id,
+            pollingNamespace,
+          })
 
           if (statusRes.status === 'IN_PROGRESS') {
             setGenStatus('in_progress')
@@ -2243,6 +2269,7 @@ function TabShorts({ project }) {
               videoType,
               modelName: currentModel.name,
               modelId: currentModel.id,
+              provider: currentModel.provider,
               resolution: currentModel.resolution,
               aspectRatio,
               duration,
@@ -2252,7 +2279,7 @@ function TabShorts({ project }) {
               createdAt: new Date().toISOString(),
             }
             persist([newShort, ...shorts].slice(0, 20))
-            showSuccess(`🎬 Video ${videoType.toUpperCase()} generee - cout reel ~${estimatedCost.toFixed(2)}$`)
+            showSuccess(`🎬 Video ${videoType.toUpperCase()} generee via ${currentModel.provider} - cout reel ~${estimatedCost.toFixed(2)}$`)
             setGenerating(false)
             setGenStatus(null)
             setPrompt('')
@@ -2288,7 +2315,6 @@ function TabShorts({ project }) {
   }
 
   const peutGenerer = prompt.trim().length >= 10 && !generating && currentModel && (videoType === 't2v' || refImage)
-  const charCount = prompt.length
 
   const modeColors = {
     eco: '#5BC78A',
@@ -2299,6 +2325,13 @@ function TabShorts({ project }) {
     eco: '🟢 Eco',
     standard: '🟡 Standard',
     premium: '🔴 Premium',
+  }
+  const providerColors = {
+    'ByteDance': '#FF6B6B',
+    'Alibaba': '#FF9F2D',
+    'Google': '#4285F4',
+    'Kuaishou': '#FF4081',
+    'OpenAI': '#10A37F',
   }
 
   if (loadingModels) {
@@ -2315,7 +2348,7 @@ function TabShorts({ project }) {
       {successMsg && <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.3)', fontSize: 12, color: '#5BC78A' }}>{successMsg}</div>}
 
       <div style={{ background: 'rgba(127,119,221,0.08)', border: '1px solid rgba(127,119,221,0.25)', borderRadius: 10, padding: '12px 16px', fontSize: 12, color: 'rgba(237,232,219,0.8)', lineHeight: 1.6 }}>
-        🧪 <strong>Mode test video IA (Phase 6ter)</strong> — Cet onglet appelle fal.ai pour generer une video courte (3-10s). 2 modes : <strong>Texte→Video</strong> ou <strong>Image→Video</strong>. Le pipeline complet (script + voix + assemblage) viendra plus tard.
+        🧪 <strong>Mode test video IA (Phase 6quater)</strong> — 9 modeles dispos via fal.ai : ByteDance, Alibaba, Google, Kuaishou, OpenAI. Choisis ton mode (Eco/Standard/Premium) puis le modele dans le menu deroulant.
       </div>
 
       {/* ═══ TOGGLE TYPE T2V / I2V ═══ */}
@@ -2368,18 +2401,73 @@ function TabShorts({ project }) {
           {['eco', 'standard', 'premium'].map(m => {
             const isActive = mode === m
             const c = modeColors[m]
-            const model = models[m]?.[videoType]?.find(x => x.default) || models[m]?.[videoType]?.[0]
-            if (!model) return null
+            const modelsInMode = models[m]?.[videoType] || []
+            const defaultModel = modelsInMode.find(x => x.default) || modelsInMode[0]
+            if (!defaultModel) return null
             return (
               <button key={m} onClick={() => setMode(m)} disabled={generating} style={{ padding: '14px 12px', borderRadius: 12, border: `1.5px solid ${isActive ? c : 'rgba(255,255,255,0.1)'}`, background: isActive ? `${c}20` : 'rgba(255,255,255,0.02)', color: isActive ? c : 'rgba(237,232,219,0.5)', fontSize: 12, fontWeight: 700, cursor: generating ? 'not-allowed' : 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, opacity: generating ? 0.5 : 1, textAlign: 'center', transition: 'all 0.15s' }}>
                 <div style={{ fontSize: 16 }}>{modeLabels[m]}</div>
-                <div style={{ fontSize: 11, fontWeight: 800 }}>{model.resolution}</div>
-                <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.85 }}>~{model.price_per_5s_usd.toFixed(2)}$ / 5s</div>
-                <div style={{ fontSize: 9, fontWeight: 400, opacity: 0.6, lineHeight: 1.3 }}>{model.description}</div>
+                <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.85 }}>{modelsInMode.length} modele{modelsInMode.length > 1 ? 's' : ''}</div>
+                <div style={{ fontSize: 9, fontWeight: 400, opacity: 0.6, lineHeight: 1.3 }}>Defaut: {defaultModel.resolution} ~{defaultModel.price_per_5s_usd.toFixed(2)}$/5s</div>
               </button>
             )
           })}
         </div>
+      </div>
+
+      {/* ═══ SELECTEUR DE MODELE (Phase 6quater) ═══ */}
+      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 16 }}>
+        <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
+          🤖 Modele {modeLabels[mode]} · {videoType === 't2v' ? 'Texte→Video' : 'Image→Video'}
+        </h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {availableModels.map(m => {
+            const isSelected = m.id === selectedModelId
+            const providerColor = providerColors[m.provider] || STUDIA_COLOR
+            return (
+              <button
+                key={m.id + '_' + m.resolution}
+                onClick={() => setSelectedModelId(m.id)}
+                disabled={generating}
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: 10,
+                  border: `1.5px solid ${isSelected ? providerColor : 'rgba(255,255,255,0.08)'}`,
+                  background: isSelected ? `${providerColor}15` : 'rgba(0,0,0,0.15)',
+                  color: '#EDE8DB',
+                  cursor: generating ? 'not-allowed' : 'pointer',
+                  opacity: generating ? 0.5 : 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  textAlign: 'left',
+                  transition: 'all 0.15s',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+                  <div style={{
+                    width: 8, height: 8, borderRadius: '50%',
+                    background: isSelected ? providerColor : 'rgba(255,255,255,0.15)',
+                    flexShrink: 0,
+                  }} />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: isSelected ? providerColor : '#EDE8DB' }}>{m.name}</span>
+                      {m.default && <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, background: `${providerColor}25`, color: providerColor, fontWeight: 700 }}>RECOMMANDE</span>}
+                      {m.supports_audio && <span style={{ fontSize: 9, padding: '2px 6px', borderRadius: 4, background: 'rgba(91,199,138,0.15)', color: '#5BC78A', fontWeight: 700 }}>🔊 AUDIO</span>}
+                    </div>
+                    <div style={{ fontSize: 10, color: 'rgba(237,232,219,0.5)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.description}</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexShrink: 0 }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: providerColor }}>~{m.price_per_5s_usd.toFixed(2)}$ / 5s</span>
+                  <span style={{ fontSize: 9, color: 'rgba(237,232,219,0.4)' }}>{m.provider}</span>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+        {availableModels.length === 0 && <div style={{ padding: 14, textAlign: 'center', fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Aucun modele disponible pour cette combinaison.</div>}
       </div>
 
       {/* ═══ FORMULAIRE GENERATION ═══ */}
@@ -2388,7 +2476,6 @@ function TabShorts({ project }) {
           {videoType === 't2v' ? '🎬 Generer une video depuis un texte' : '🎬 Animer une image en video'}
         </h3>
 
-        {/* === SECTION I2V : Upload image === */}
         {videoType === 'i2v' && (
           <div style={{ marginBottom: 14 }}>
             <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>
@@ -2430,16 +2517,16 @@ function TabShorts({ project }) {
         <div style={{ marginBottom: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
             <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>
-              {videoType === 't2v' ? 'Prompt video (en anglais pour de meilleurs resultats)' : 'Comment animer cette image ? (en anglais)'}
+              {videoType === 't2v' ? 'Prompt video' : 'Comment animer cette image ?'}
             </label>
-            <span style={{ fontSize: 10, color: charCount > 2000 ? '#C75B4E' : 'rgba(237,232,219,0.4)' }}>{charCount} / 2000</span>
+            <span style={{ fontSize: 10, color: prompt.length > 2000 ? '#C75B4E' : 'rgba(237,232,219,0.4)' }}>{prompt.length} / 2000</span>
           </div>
           <textarea
             value={prompt}
             onChange={e => setPrompt(e.target.value.slice(0, 2000))}
             placeholder={videoType === 't2v'
-              ? 'Ex: A stray cat slowly walking down a quiet city street, late afternoon light, cinematic, photorealistic'
-              : 'Ex: The cat slowly turns its head and looks at the camera, smooth motion, natural'
+              ? 'Ex: Un chat errant marche lentement dans une rue calme, lumiere de fin d\'apres-midi, cinematique, photorealiste'
+              : 'Ex: Le personnage tourne lentement la tete et regarde la camera, mouvement fluide'
             }
             rows={4}
             style={{ ...iS, resize: 'vertical' }}
@@ -2448,7 +2535,6 @@ function TabShorts({ project }) {
           {prompt.length > 0 && prompt.length < 10 && <div style={{ fontSize: 10, color: '#C75B4E', marginTop: 4 }}>Encore {10 - prompt.length} caracteres minimum.</div>}
         </div>
 
-        {/* Format video : visible uniquement en T2V (I2V utilise les dimensions de l'image) */}
         {videoType === 't2v' && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
             <div>
@@ -2469,7 +2555,6 @@ function TabShorts({ project }) {
           </div>
         )}
 
-        {/* En I2V on a juste la duree (format depend de l'image) */}
         {videoType === 'i2v' && (
           <div style={{ marginBottom: 14 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -2485,15 +2570,15 @@ function TabShorts({ project }) {
 
         {currentModel && (
           <div style={{ padding: '10px 12px', background: 'rgba(0,0,0,0.25)', borderRadius: 8, marginBottom: 14, fontSize: 12, color: 'rgba(237,232,219,0.7)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>💰 Cout estime pour {duration}s en {currentModel.resolution}</span>
-            <strong style={{ color: modeColors[mode] }}>~{(currentModel.price_per_5s_usd * duration / 5).toFixed(2)}$</strong>
+            <span>💰 Cout estime pour {duration}s · {currentModel.name}</span>
+            <strong style={{ color: providerColors[currentModel.provider] || modeColors[mode] }}>~{(currentModel.price_per_5s_usd * duration / 5).toFixed(2)}$</strong>
           </div>
         )}
 
         <button onClick={generer} disabled={!peutGenerer} style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: peutGenerer ? modeColors[mode] : `${modeColors[mode]}40`, color: '#0D1B2A', fontSize: 14, fontWeight: 800, cursor: peutGenerer ? 'pointer' : 'not-allowed' }}>
           {generating
             ? `⏳ Generation... ${genElapsed}s ${genStatus === 'queued' ? '(en queue)' : '(en cours)'}`
-            : `🎬 Generer la video ${videoType === 'i2v' ? 'animee' : ''} (${modeLabels[mode]})`
+            : `🎬 Generer la video ${videoType === 'i2v' ? 'animee' : ''} via ${currentModel?.provider || '?'} (${modeLabels[mode]})`
           }
         </button>
 
@@ -2511,12 +2596,12 @@ function TabShorts({ project }) {
           <div style={{ background: 'rgba(127,119,221,0.05)', border: `1px dashed ${STUDIA_COLOR}40`, borderRadius: 12, padding: 40, textAlign: 'center' }}>
             <div style={{ fontSize: 36, marginBottom: 10 }}>🎬</div>
             <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)' }}>Aucune video generee pour ce projet</p>
-            <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', marginTop: 6 }}>Genere ta premiere video avec un prompt en anglais.</p>
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
             {shorts.map(s => {
               const c = modeColors[s.mode] || STUDIA_COLOR
+              const pc = providerColors[s.provider] || c
               const aspectStyle = s.aspectRatio === '9:16' ? '9 / 16' : s.aspectRatio === '16:9' ? '16 / 9' : '1 / 1'
               const typeLabel = s.videoType === 'i2v' ? '📷 I2V' : '📝 T2V'
               return (
@@ -2526,6 +2611,7 @@ function TabShorts({ project }) {
                     <div style={{ position: 'absolute', top: 6, left: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       <span style={{ background: 'rgba(0,0,0,0.75)', color: c, fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6, backdropFilter: 'blur(4px)' }}>{modeLabels[s.mode]}</span>
                       <span style={{ background: 'rgba(0,0,0,0.75)', color: STUDIA_COLOR, fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6 }}>{typeLabel}</span>
+                      {s.provider && <span style={{ background: 'rgba(0,0,0,0.75)', color: pc, fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6 }}>{s.provider}</span>}
                     </div>
                     <div style={{ position: 'absolute', top: 6, right: 6, background: 'rgba(0,0,0,0.75)', color: '#EDE8DB', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6 }}>{s.resolution} · {s.duration}s</div>
                     <div style={{ position: 'absolute', bottom: 6, right: 6, background: 'rgba(0,0,0,0.75)', color: '#5BC78A', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6 }}>{s.cost.toFixed(2)}$</div>
