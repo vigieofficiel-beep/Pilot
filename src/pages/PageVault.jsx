@@ -27,23 +27,33 @@ export default function PageVault({ project, projects }) {
     try { const s = localStorage.getItem(STORAGE_KEY); return s ? JSON.parse(s) : [] }
     catch { return [] }
   })
-  const [showForm,   setShowForm]   = useState(false)
-  const [editCompte, setEditCompte] = useState({ ...EMPTY_COMPTE })
-  const [editId,     setEditId]     = useState(null)
-  const [search,     setSearch]     = useState('')
-  const [filterCat,  setFilterCat]  = useState('tous')
-  const [revealed,   setRevealed]   = useState({}) // id → true si révélé
-  const [copied,     setCopied]     = useState(null)
-  const [msg,        setMsg]        = useState(null)
+  const [showForm,    setShowForm]    = useState(false)
+  const [editCompte,  setEditCompte]  = useState({ ...EMPTY_COMPTE })
+  const [editId,      setEditId]      = useState(null)
+  const [search,      setSearch]      = useState('')
+  const [filterCat,   setFilterCat]   = useState('tous')
+  const [showApiOnly, setShowApiOnly] = useState(false) // NOUVEAU : filtre clés API
+  const [revealed,    setRevealed]    = useState({})
+  const [copied,      setCopied]      = useState(null)
+  const [msg,         setMsg]         = useState(null)
 
   const save = (data) => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
     setComptes(data)
+    // NOUVEAU : déclenche un event pour que les autres modules
+    // (ceux qui utilisent useApiKey) se mettent à jour
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: STORAGE_KEY,
+      newValue: JSON.stringify(data),
+    }))
   }
 
   const totalMensuel = comptes
     .filter(c => c.actif)
     .reduce((acc, c) => acc + (parseFloat(c.cout_mensuel) || 0), 0)
+
+  // NOUVEAU : compte les clés API disponibles
+  const totalApiKeys = comptes.filter(c => c.api_key && c.api_key.trim()).length
 
   const filtered = comptes.filter(c => {
     const matchSearch = !search ||
@@ -51,7 +61,9 @@ export default function PageVault({ project, projects }) {
       c.url?.toLowerCase().includes(search.toLowerCase())
     const matchCat = filterCat === 'tous' || c.categorie === filterCat
     const matchProjet = c.projet === 'tous' || c.projet === project.id
-    return matchSearch && matchCat && matchProjet
+    // NOUVEAU : filtre clés API
+    const matchApi = !showApiOnly || (c.api_key && c.api_key.trim())
+    return matchSearch && matchCat && matchProjet && matchApi
   })
 
   const openNew = () => {
@@ -110,11 +122,11 @@ export default function PageVault({ project, projects }) {
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 }}>
               <div>
                 <label style={{ fontSize:11, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:4 }}>Nom *</label>
-                <input value={editCompte.nom} onChange={e => setEditCompte(p=>({...p,nom:e.target.value}))} placeholder="Ex: Vercel" style={iS}/>
+                <input value={editCompte.nom} onChange={e => setEditCompte(p=>({...p,nom:e.target.value}))} placeholder="Ex: fal.ai, OpenAI, Anthropic..." style={iS}/>
               </div>
               <div>
                 <label style={{ fontSize:11, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:4 }}>URL</label>
-                <input value={editCompte.url} onChange={e => setEditCompte(p=>({...p,url:e.target.value}))} placeholder="https://vercel.com" style={iS}/>
+                <input value={editCompte.url} onChange={e => setEditCompte(p=>({...p,url:e.target.value}))} placeholder="https://fal.ai" style={iS}/>
               </div>
             </div>
 
@@ -130,8 +142,13 @@ export default function PageVault({ project, projects }) {
             </div>
 
             <div style={{ marginBottom:12 }}>
-              <label style={{ fontSize:11, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:4 }}>🔑 Clé API</label>
-              <input value={editCompte.api_key} onChange={e => setEditCompte(p=>({...p,api_key:e.target.value}))} placeholder="sk-..." style={iS}/>
+              <label style={{ fontSize:11, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:4 }}>
+                🔑 Clé API
+                <span style={{ fontSize:10, color:'rgba(237,232,219,0.3)', marginLeft:8, fontWeight:'normal' }}>
+                  (utilisée par les modules Pilot via le hook useApiKey)
+                </span>
+              </label>
+              <input value={editCompte.api_key} onChange={e => setEditCompte(p=>({...p,api_key:e.target.value}))} placeholder="sk-..., key_..., rpa_..." style={iS}/>
             </div>
 
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12, marginBottom:12 }}>
@@ -144,7 +161,7 @@ export default function PageVault({ project, projects }) {
               <div>
                 <label style={{ fontSize:11, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:4 }}>Projet lié</label>
                 <select value={editCompte.projet} onChange={e => setEditCompte(p=>({...p,projet:e.target.value}))} style={{ ...iS, cursor:'pointer' }}>
-                  <option value="tous">🌐 Tous</option>
+                  <option value="tous">🌐 Tous (transversal)</option>
                   {projects.map(p => <option key={p.id} value={p.id}>{p.emoji} {p.label}</option>)}
                 </select>
               </div>
@@ -188,6 +205,11 @@ export default function PageVault({ project, projects }) {
             <span style={{ fontSize:11, color:'rgba(237,232,219,0.4)' }}>Comptes</span>
             <div style={{ fontSize:20, fontWeight:800, color:'#EDE8DB' }}>{comptes.length}</div>
           </div>
+          {/* NOUVEAU : badge clés API */}
+          <div style={{ padding:'8px 16px', borderRadius:12, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)' }}>
+            <span style={{ fontSize:11, color:'rgba(237,232,219,0.4)' }}>🔑 Clés API</span>
+            <div style={{ fontSize:20, fontWeight:800, color:'#5BC78A' }}>{totalApiKeys}</div>
+          </div>
         </div>
         <button onClick={openNew}
           style={{ padding:'10px 20px', borderRadius:10, border:'none', background:project.color, color:'#0D1B2A', fontSize:13, fontWeight:800, cursor:'pointer', display:'flex', alignItems:'center', gap:8 }}>
@@ -202,9 +224,18 @@ export default function PageVault({ project, projects }) {
       )}
 
       {/* ── FILTRES ── */}
-      <div style={{ display:'flex', gap:8, flexWrap:'wrap', flexShrink:0 }}>
+      <div style={{ display:'flex', gap:8, flexWrap:'wrap', flexShrink:0, alignItems:'center' }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍 Rechercher..."
           style={{ ...iS, width:200, padding:'7px 12px' }}/>
+
+        {/* NOUVEAU : toggle filtre clés API */}
+        <button onClick={() => setShowApiOnly(!showApiOnly)}
+          style={{ padding:'6px 14px', borderRadius:20, border:`1px solid ${showApiOnly?'#5BC78A':'rgba(255,255,255,0.1)'}`, background:showApiOnly?'rgba(91,199,138,0.15)':'transparent', color:showApiOnly?'#5BC78A':'rgba(237,232,219,0.5)', fontSize:11, fontWeight:700, cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}>
+          🔑 Avec clé API ({totalApiKeys})
+        </button>
+
+        <div style={{ width:1, height:20, background:'rgba(255,255,255,0.1)' }} />
+
         <button onClick={() => setFilterCat('tous')}
           style={{ padding:'6px 14px', borderRadius:20, border:`1px solid ${filterCat==='tous'?project.color:'rgba(255,255,255,0.1)'}`, background:filterCat==='tous'?`${project.color}20`:'transparent', color:filterCat==='tous'?project.color:'rgba(237,232,219,0.4)', fontSize:11, fontWeight:700, cursor:'pointer' }}>
           Tous ({comptes.length})
@@ -226,16 +257,19 @@ export default function PageVault({ project, projects }) {
         {filtered.length === 0
           ? <div style={{ padding:48, textAlign:'center', color:'rgba(237,232,219,0.3)', fontSize:13 }}>
               {comptes.length === 0
-                ? <>Aucun compte enregistré.<br/>Commence par ajouter Vercel, Supabase, OpenAI... 🔐</>
-                : 'Aucun compte pour cette sélection.'}
+                ? <>Aucun compte enregistré.<br/>Commence par ajouter fal.ai, OpenAI, RunPod... 🔐</>
+                : showApiOnly
+                  ? 'Aucun compte avec clé API pour cette sélection.'
+                  : 'Aucun compte pour cette sélection.'}
             </div>
           : filtered.map(c => {
               const cat = CATEGORIES.find(x => x.id === c.categorie)
               const proj = projects.find(p => p.id === c.projet)
               const isRevealed = revealed[c.id]
+              const hasApiKey = c.api_key && c.api_key.trim()
               return (
-                <div key={c.id} style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:'14px 18px', display:'flex', alignItems:'flex-start', gap:14 }}>
-                  
+                <div key={c.id} style={{ background:'rgba(255,255,255,0.03)', border:`1px solid ${hasApiKey ? 'rgba(91,199,138,0.15)' : 'rgba(255,255,255,0.07)'}`, borderRadius:12, padding:'14px 18px', display:'flex', alignItems:'flex-start', gap:14 }}>
+
                   {/* Icône catégorie */}
                   <div style={{ width:36, height:36, borderRadius:10, background:`${project.color}15`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:18, flexShrink:0 }}>
                     {cat?.emoji || '📦'}
@@ -245,13 +279,23 @@ export default function PageVault({ project, projects }) {
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4, flexWrap:'wrap' }}>
                       <span style={{ fontSize:14, fontWeight:700, color:'#EDE8DB' }}>{c.nom}</span>
+                      {/* NOUVEAU : badge clé API verte si présente */}
+                      {hasApiKey && (
+                        <span style={{ fontSize:10, color:'#5BC78A', background:'rgba(91,199,138,0.15)', padding:'1px 8px', borderRadius:10, fontWeight:700 }}>
+                          🔑 API
+                        </span>
+                      )}
                       {c.url && (
                         <a href={c.url} target="_blank" rel="noreferrer"
                           style={{ fontSize:11, color:project.color, textDecoration:'none', background:`${project.color}15`, padding:'1px 8px', borderRadius:10 }}>
                           🔗 Ouvrir
                         </a>
                       )}
-                      {proj && proj.id !== 'tous' && (
+                      {c.projet === 'tous' ? (
+                        <span style={{ fontSize:10, color:'rgba(237,232,219,0.5)', background:'rgba(255,255,255,0.05)', padding:'1px 8px', borderRadius:10 }}>
+                          🌐 Transversal
+                        </span>
+                      ) : proj && (
                         <span style={{ fontSize:10, color:proj.color, background:`${proj.color}15`, padding:'1px 8px', borderRadius:10 }}>
                           {proj.emoji} {proj.label}
                         </span>
@@ -290,7 +334,7 @@ export default function PageVault({ project, projects }) {
                           </button>
                         </div>
                       )}
-                      {c.api_key && (
+                      {hasApiKey && (
                         <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                           <span style={{ fontSize:11, color:'rgba(237,232,219,0.3)' }}>API:</span>
                           <span style={{ fontSize:11, color:'rgba(237,232,219,0.6)', fontFamily:'monospace' }}>
