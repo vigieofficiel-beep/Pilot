@@ -337,6 +337,47 @@ async function genererAudioIA({ voixId, texte, ton, vitesse, temperature, topP, 
   if (!res.ok) throw new Error(await extractApiError(res))
   return res.json()
 }
+// --- Agent VIDEO FAL.AI (Phase 6bis backend - Seedance via fal.ai) ---
+
+async function listVideoModels() {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) throw new Error('Cle Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
+  const res = await fetch(`${AGENTS_API_URL}/studia/video/models`, {
+    headers: { 'X-API-Key': apiKey },
+  })
+  if (!res.ok) throw new Error(await extractApiError(res))
+  return res.json()
+}
+
+async function generateVideoFal({ mode, modelId, resolution, prompt, durationSeconds, aspectRatio, projectId }) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) throw new Error('Cle Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
+  const payload = {
+    mode,
+    model_id: modelId,
+    resolution,
+    prompt,
+    duration_seconds: durationSeconds,
+    aspect_ratio: aspectRatio,
+    project_id: projectId,
+  }
+  const res = await fetch(`${AGENTS_API_URL}/studia/video/generer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await extractApiError(res))
+  return res.json()
+}
+
+async function checkVideoStatus({ requestId, modelId }) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) throw new Error('Cle Agents Doppler introuvable')
+  const url = `${AGENTS_API_URL}/studia/video/status/${requestId}?model_id=${encodeURIComponent(modelId)}`
+  const res = await fetch(url, { headers: { 'X-API-Key': apiKey } })
+  if (!res.ok) throw new Error(await extractApiError(res))
+  return res.json()
+}
 
 function base64ToAudioBlobUrl(base64) {
   const byteChars = atob(base64)
@@ -2048,157 +2089,278 @@ function TabCinema({ project }) {
   )
 }
 
-// ── ONGLET 4 : SHORTS ─────────────────────────────────────────────
+// ── ONGLET 4 : SHORTS (Phase 6bis - fal.ai test video IA seule) ─────
 function TabShorts({ project }) {
   const shortsKey = `pilotage_studia_shorts_${project.id}`
   const [shorts, setShorts] = useState(() => { try { return JSON.parse(localStorage.getItem(shortsKey)) || [] } catch { return [] } })
-  const [voixDispo, setVoixDispo] = useState([])
 
-  const [sujet, setSujet] = useState('')
-  const [dureeShort, setDureeShort] = useState(60)
-  const [voixId, setVoixId] = useState('')
-  const [styleS, setStyleS] = useState('demo')
-  const [sousTitres, setSousTitres] = useState(true)
+  // Toggle 3 modes
+  const [mode, setMode] = useState('eco')
+  const [models, setModels] = useState(null)
+  const [loadingModels, setLoadingModels] = useState(true)
+
+  // Form
+  const [prompt, setPrompt] = useState('')
+  const [aspectRatio, setAspectRatio] = useState('9:16')
+  const [duration, setDuration] = useState(5)
+
+  // Generation state
   const [generating, setGenerating] = useState(false)
+  const [genStatus, setGenStatus] = useState(null)
+  const [genElapsed, setGenElapsed] = useState(0)
+  const pollIntervalRef = useRef(null)
+  const elapsedIntervalRef = useRef(null)
 
-  const [shortVideoUrls, setShortVideoUrls] = useState({})
+  const [errorMsg, setErrorMsg] = useState(null)
+  const [successMsg, setSuccessMsg] = useState(null)
 
-  const refreshVoixDispo = async () => {
-    try {
-      const result = await listVoixIA(project.id)
-      setVoixDispo((result.voix || []).filter(v => v.status === 'ready'))
-    } catch {
-      setVoixDispo([])
-    }
-  }
-
-  useEffect(() => {
-    try { setShorts(JSON.parse(localStorage.getItem(shortsKey)) || []) } catch { setShorts([]) }
-    refreshVoixDispo()
-  }, [project.id])
+  const showError = (msg, dur = 8000) => { setErrorMsg(msg); setTimeout(() => setErrorMsg(null), dur) }
+  const showSuccess = (msg, dur = 5000) => { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(null), dur) }
 
   useEffect(() => {
     let cancelled = false
-    const generateAll = async () => {
-      for (const s of shorts.slice(0, 6)) {
-        if (cancelled) return
-        const seed = parseInt(s.id.slice(-6), 36) || 1
-        try {
-          const url = await generateMockVideo(Math.min(s.duree, 8), 9/16, s.sujet.slice(0, 30), project.color || STUDIA_COLOR, seed)
-          if (!cancelled) {
-            setShortVideoUrls(prev => ({ ...prev, [s.id]: url }))
-          }
-        } catch (err) { console.error(err) }
+    const load = async () => {
+      try {
+        const cat = await listVideoModels()
+        if (!cancelled) setModels(cat)
+      } catch (err) {
+        if (!cancelled) showError(`Impossible de charger le catalogue : ${err.message}`)
       }
+      if (!cancelled) setLoadingModels(false)
     }
-    generateAll()
-    return () => {
-      cancelled = true
-      Object.values(shortVideoUrls).forEach(url => { if (url) URL.revokeObjectURL(url) })
-    }
-  }, [shorts.length, project.id])
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    try { setShorts(JSON.parse(localStorage.getItem(shortsKey)) || []) } catch { setShorts([]) }
+  }, [project.id])
+
+  useEffect(() => () => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+    if (elapsedIntervalRef.current) clearInterval(elapsedIntervalRef.current)
+  }, [])
 
   const persist = (arr) => { localStorage.setItem(shortsKey, JSON.stringify(arr)); setShorts(arr) }
 
+  const currentModel = models?.[mode]?.find(m => m.default) || models?.[mode]?.[0]
+
   const generer = async () => {
-    if (!sujet.trim() || !voixId || generating) return
-    setGenerating(true)
-    await new Promise(r => setTimeout(r, 2500))
-    const v = voixDispo.find(x => x.id === voixId)
-    const newShort = {
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      sujet: sujet.trim(), duree: dureeShort, voixId, voixName: v?.name || '?', styleS, sousTitres, createdAt: new Date().toISOString(),
+    if (!prompt.trim() || generating || !currentModel) return
+    if (prompt.trim().length < 10) {
+      showError('Le prompt doit faire au moins 10 caracteres.')
+      return
     }
-    persist([newShort, ...shorts].slice(0, 12))
-    setSujet('')
-    setGenerating(false)
+
+    setGenerating(true)
+    setGenStatus('queued')
+    setGenElapsed(0)
+    setErrorMsg(null)
+
+    elapsedIntervalRef.current = setInterval(() => setGenElapsed(e => e + 1), 1000)
+
+    try {
+      const submitResult = await generateVideoFal({
+        mode,
+        modelId: currentModel.id,
+        resolution: currentModel.resolution,
+        prompt: prompt.trim(),
+        durationSeconds: duration,
+        aspectRatio,
+        projectId: project.id,
+      })
+
+      const requestId = submitResult.request_id
+      const estimatedCost = submitResult.estimated_cost_usd
+
+      pollIntervalRef.current = setInterval(async () => {
+        try {
+          const statusRes = await checkVideoStatus({ requestId, modelId: currentModel.id })
+
+          if (statusRes.status === 'IN_PROGRESS') {
+            setGenStatus('in_progress')
+          } else if (statusRes.status === 'COMPLETED' && statusRes.video_url) {
+            clearInterval(pollIntervalRef.current)
+            clearInterval(elapsedIntervalRef.current)
+            pollIntervalRef.current = null
+            elapsedIntervalRef.current = null
+
+            const newShort = {
+              id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+              requestId,
+              prompt: prompt.trim(),
+              mode,
+              modelName: currentModel.name,
+              modelId: currentModel.id,
+              resolution: currentModel.resolution,
+              aspectRatio,
+              duration,
+              cost: estimatedCost,
+              videoUrl: statusRes.video_url,
+              createdAt: new Date().toISOString(),
+            }
+            persist([newShort, ...shorts].slice(0, 20))
+            showSuccess(`🎬 Video generee - cout reel ~${estimatedCost.toFixed(2)}$`)
+            setGenerating(false)
+            setGenStatus(null)
+            setPrompt('')
+          } else if (statusRes.status === 'FAILED') {
+            clearInterval(pollIntervalRef.current)
+            clearInterval(elapsedIntervalRef.current)
+            pollIntervalRef.current = null
+            elapsedIntervalRef.current = null
+            showError(`❌ Generation echouee : ${statusRes.error_message || 'erreur inconnue'}`)
+            setGenerating(false)
+            setGenStatus(null)
+          }
+        } catch (pollErr) {
+          console.error('Erreur polling:', pollErr)
+        }
+      }, 3000)
+
+    } catch (err) {
+      showError(`❌ ${err.message}`)
+      setGenerating(false)
+      setGenStatus(null)
+      if (elapsedIntervalRef.current) {
+        clearInterval(elapsedIntervalRef.current)
+        elapsedIntervalRef.current = null
+      }
+    }
   }
 
   const supprimer = (id) => {
+    if (!confirm('Supprimer cette video ?')) return
     persist(shorts.filter(s => s.id !== id))
-    if (shortVideoUrls[id]) URL.revokeObjectURL(shortVideoUrls[id])
-    setShortVideoUrls(prev => { const c = { ...prev }; delete c[id]; return c })
   }
 
-  const peutGenerer = sujet.trim() && voixId && !generating
-  const charCount = sujet.length
+  const peutGenerer = prompt.trim().length >= 10 && !generating && currentModel
+  const charCount = prompt.length
+
+  const modeColors = {
+    eco: '#5BC78A',
+    standard: '#D4A853',
+    premium: '#C75B4E',
+  }
+  const modeLabels = {
+    eco: '🟢 Eco',
+    standard: '🟡 Standard',
+    premium: '🔴 Premium',
+  }
+
+  if (loadingModels) {
+    return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 60, color: 'rgba(237,232,219,0.4)', fontSize: 13 }}>⏳ Chargement du catalogue fal.ai...</div>
+  }
+
+  if (!models) {
+    return <div style={{ background: 'rgba(199,91,78,0.06)', border: '1px solid rgba(199,91,78,0.2)', borderRadius: 12, padding: 24, textAlign: 'center', color: '#C75B4E', fontSize: 13 }}>❌ Impossible de charger le catalogue. Verifie que la cle Agents Doppler est dans le Coffre-fort.</div>
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {errorMsg && <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', fontSize: 12, color: '#C75B4E' }}>{errorMsg}</div>}
+      {successMsg && <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.3)', fontSize: 12, color: '#5BC78A' }}>{successMsg}</div>}
+
+      <div style={{ background: 'rgba(127,119,221,0.08)', border: '1px solid rgba(127,119,221,0.25)', borderRadius: 10, padding: '12px 16px', fontSize: 12, color: 'rgba(237,232,219,0.8)', lineHeight: 1.6 }}>
+        🧪 <strong>Mode test video IA seule (Phase 6bis)</strong> — Cet onglet appelle directement fal.ai pour generer une video courte (3-10s). Le pipeline complet (script + voix + assemblage) viendra dans une prochaine phase.
+      </div>
+
+      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 16 }}>
+        <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>Choisis ton mode</h3>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+          {['eco', 'standard', 'premium'].map(m => {
+            const isActive = mode === m
+            const c = modeColors[m]
+            const model = models[m]?.find(x => x.default) || models[m]?.[0]
+            if (!model) return null
+            return (
+              <button key={m} onClick={() => setMode(m)} disabled={generating} style={{ padding: '14px 12px', borderRadius: 12, border: `1.5px solid ${isActive ? c : 'rgba(255,255,255,0.1)'}`, background: isActive ? `${c}20` : 'rgba(255,255,255,0.02)', color: isActive ? c : 'rgba(237,232,219,0.5)', fontSize: 12, fontWeight: 700, cursor: generating ? 'not-allowed' : 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, opacity: generating ? 0.5 : 1, textAlign: 'center', transition: 'all 0.15s' }}>
+                <div style={{ fontSize: 16 }}>{modeLabels[m]}</div>
+                <div style={{ fontSize: 11, fontWeight: 800 }}>{model.resolution}</div>
+                <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.85 }}>~{model.price_per_5s_usd.toFixed(2)}$ / 5s</div>
+                <div style={{ fontSize: 9, fontWeight: 400, opacity: 0.6, lineHeight: 1.3 }}>{model.description}</div>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
       <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>⚡ Nouveau short (vertical 9:16)</h3>
+        <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>🎬 Generer une video</h3>
+
         <div style={{ marginBottom: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Sujet du short *</label>
-            <span style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)' }}>{charCount} / 300</span>
+            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Prompt video (en anglais pour de meilleurs resultats)</label>
+            <span style={{ fontSize: 10, color: charCount > 2000 ? '#C75B4E' : 'rgba(237,232,219,0.4)' }}>{charCount} / 2000</span>
           </div>
-          <textarea value={sujet} onChange={e => setSujet(e.target.value.slice(0, 300))} placeholder="Ex: L'extraterritorialité du droit US en 60 secondes" rows={3} style={{ ...iS, resize: 'vertical' }} disabled={generating} />
+          <textarea value={prompt} onChange={e => setPrompt(e.target.value.slice(0, 2000))} placeholder="Ex: A stray cat slowly walking down a quiet city street, late afternoon light, cinematic, photorealistic" rows={4} style={{ ...iS, resize: 'vertical' }} disabled={generating} />
+          {prompt.length > 0 && prompt.length < 10 && <div style={{ fontSize: 10, color: '#C75B4E', marginTop: 4 }}>Encore {10 - prompt.length} caracteres minimum.</div>}
         </div>
+
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
           <div>
-            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Voix narrative *</label>
-            <select value={voixId} onChange={e => setVoixId(e.target.value)} style={{ ...iS, cursor: voixDispo.length > 0 ? 'pointer' : 'not-allowed' }} disabled={generating || voixDispo.length === 0}>
-              <option value="">{voixDispo.length === 0 ? '— Aucune voix dispo —' : '— Choisir une voix —'}</option>
-              {voixDispo.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-            </select>
+            <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 6 }}>Format</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={() => setAspectRatio('9:16')} disabled={generating} style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: `1px solid ${aspectRatio === '9:16' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: aspectRatio === '9:16' ? `${STUDIA_COLOR}20` : 'transparent', color: aspectRatio === '9:16' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: 700, cursor: generating ? 'not-allowed' : 'pointer' }}>📱 9:16</button>
+              <button onClick={() => setAspectRatio('16:9')} disabled={generating} style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: `1px solid ${aspectRatio === '16:9' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: aspectRatio === '16:9' ? `${STUDIA_COLOR}20` : 'transparent', color: aspectRatio === '16:9' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: 700, cursor: generating ? 'not-allowed' : 'pointer' }}>🖥️ 16:9</button>
+              <button onClick={() => setAspectRatio('1:1')} disabled={generating} style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: `1px solid ${aspectRatio === '1:1' ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: aspectRatio === '1:1' ? `${STUDIA_COLOR}20` : 'transparent', color: aspectRatio === '1:1' ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: 700, cursor: generating ? 'not-allowed' : 'pointer' }}>⬛ 1:1</button>
+            </div>
           </div>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Durée</label>
-              <span style={{ fontSize: 11, color: STUDIA_COLOR, fontWeight: 700 }}>{dureeShort}s</span>
+              <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)' }}>Duree</label>
+              <span style={{ fontSize: 11, color: STUDIA_COLOR, fontWeight: 700 }}>{duration}s</span>
             </div>
-            <input type="range" min="30" max="120" step="10" value={dureeShort} onChange={e => setDureeShort(parseInt(e.target.value))} style={{ width: '100%', accentColor: STUDIA_COLOR }} disabled={generating} />
+            <input type="range" min="3" max="10" step="1" value={duration} onChange={e => setDuration(parseInt(e.target.value))} style={{ width: '100%', accentColor: STUDIA_COLOR }} disabled={generating} />
           </div>
         </div>
-        <div style={{ marginBottom: 14 }}>
-          <label style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', display: 'block', marginBottom: 8 }}>Style visuel</label>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {STYLES_SHORT.map(s => <button key={s.val} onClick={() => setStyleS(s.val)} disabled={generating} style={{ padding: '6px 12px', borderRadius: 18, border: `1px solid ${styleS === s.val ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, background: styleS === s.val ? `${STUDIA_COLOR}20` : 'transparent', color: styleS === s.val ? STUDIA_COLOR : 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: styleS === s.val ? 700 : 400, cursor: generating ? 'not-allowed' : 'pointer' }}>{s.emoji} {s.label}</button>)}
-          </div>
-        </div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: generating ? 'not-allowed' : 'pointer', padding: '10px 14px', background: sousTitres ? `${STUDIA_COLOR}15` : 'rgba(255,255,255,0.03)', border: `1px solid ${sousTitres ? STUDIA_COLOR : 'rgba(255,255,255,0.1)'}`, borderRadius: 10, marginBottom: 16 }}>
-          <input type="checkbox" checked={sousTitres} onChange={e => setSousTitres(e.target.checked)} disabled={generating} style={{ accentColor: STUDIA_COLOR }} />
-          <span style={{ fontSize: 12, fontWeight: 700, color: sousTitres ? STUDIA_COLOR : 'rgba(237,232,219,0.5)' }}>📝 Sous-titres automatiques</span>
-        </label>
-        {voixDispo.length === 0 && (
-          <div style={{ background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 11, color: '#D4A853' }}>
-            ⚠️ Aucune voix prête.
+
+        {currentModel && (
+          <div style={{ padding: '10px 12px', background: 'rgba(0,0,0,0.25)', borderRadius: 8, marginBottom: 14, fontSize: 12, color: 'rgba(237,232,219,0.7)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>💰 Cout estime pour {duration}s en {currentModel.resolution}</span>
+            <strong style={{ color: modeColors[mode] }}>~{(currentModel.price_per_5s_usd * duration / 5).toFixed(2)}$</strong>
           </div>
         )}
-        <button onClick={generer} disabled={!peutGenerer} style={{ width: '100%', padding: '12px', borderRadius: 10, border: 'none', background: peutGenerer ? STUDIA_COLOR : `${STUDIA_COLOR}40`, color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: peutGenerer ? 'pointer' : 'not-allowed' }}>
-          {generating ? '⏳ Génération du short...' : '⚡ Générer le short'}
+
+        <button onClick={generer} disabled={!peutGenerer} style={{ width: '100%', padding: '14px', borderRadius: 10, border: 'none', background: peutGenerer ? modeColors[mode] : `${modeColors[mode]}40`, color: '#0D1B2A', fontSize: 14, fontWeight: 800, cursor: peutGenerer ? 'pointer' : 'not-allowed' }}>
+          {generating ? `⏳ Generation... ${genElapsed}s ${genStatus === 'queued' ? '(en queue)' : '(en cours)'}` : `🎬 Generer la video (${modeLabels[mode]})`}
         </button>
+
+        {generating && (
+          <div style={{ marginTop: 12, padding: '10px 12px', background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 8, fontSize: 11, color: '#D4A853', textAlign: 'center' }}>
+            ⏱️ Patience, fal.ai prend generalement 30-90 secondes pour generer une video courte.
+          </div>
+        )}
       </div>
+
       <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>📱 Mes shorts {shorts.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({shorts.length})</span>}</h3>
+        <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 16 }}>📱 Mes videos {shorts.length > 0 && <span style={{ color: 'rgba(237,232,219,0.4)', fontWeight: 400 }}>({shorts.length})</span>}</h3>
         {shorts.length === 0 ? (
           <div style={{ background: 'rgba(127,119,221,0.05)', border: `1px dashed ${STUDIA_COLOR}40`, borderRadius: 12, padding: 40, textAlign: 'center' }}>
-            <div style={{ fontSize: 36, marginBottom: 10 }}>📱</div>
-            <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)' }}>Aucun short généré</p>
+            <div style={{ fontSize: 36, marginBottom: 10 }}>🎬</div>
+            <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)' }}>Aucune video generee pour ce projet</p>
+            <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', marginTop: 6 }}>Genere ta premiere video avec un prompt en anglais.</p>
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
             {shorts.map(s => {
-              const sty = STYLES_SHORT.find(x => x.val === s.styleS)
-              const url = shortVideoUrls[s.id]
+              const c = modeColors[s.mode] || STUDIA_COLOR
+              const aspectStyle = s.aspectRatio === '9:16' ? '9 / 16' : s.aspectRatio === '16:9' ? '16 / 9' : '1 / 1'
               return (
                 <div key={s.id} style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                  <div style={{ position: 'relative', aspectRatio: '9 / 16', background: '#000' }}>
-                    {url ? (
-                      <video src={url} controls style={{ width: '100%', height: '100%', display: 'block', objectFit: 'cover' }} />
-                    ) : (
-                      <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <div style={{ fontSize: 20, animation: 'studia-pulse 1.5s infinite' }}>⏳</div>
-                      </div>
-                    )}
-                    <div style={{ position: 'absolute', top: 6, left: 6, background: 'rgba(0,0,0,0.7)', color: '#EDE8DB', fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 5, backdropFilter: 'blur(4px)' }}>{sty?.emoji} {sty?.label}</div>
-                    <div style={{ position: 'absolute', top: 6, right: 6, background: 'rgba(0,0,0,0.7)', color: '#EDE8DB', fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 5 }}>{s.duree}s</div>
-                    {s.sousTitres && <div style={{ position: 'absolute', bottom: 6, left: 6, background: `${STUDIA_COLOR}d0`, color: '#0D1B2A', fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 5 }}>📝 ST</div>}
+                  <div style={{ position: 'relative', aspectRatio: aspectStyle, background: '#000' }}>
+                    <video src={s.videoUrl} controls style={{ width: '100%', height: '100%', display: 'block', objectFit: 'contain' }} />
+                    <div style={{ position: 'absolute', top: 6, left: 6, background: 'rgba(0,0,0,0.75)', color: c, fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6, backdropFilter: 'blur(4px)' }}>{modeLabels[s.mode]}</div>
+                    <div style={{ position: 'absolute', top: 6, right: 6, background: 'rgba(0,0,0,0.75)', color: '#EDE8DB', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6 }}>{s.resolution} · {s.duration}s</div>
+                    <div style={{ position: 'absolute', bottom: 6, right: 6, background: 'rgba(0,0,0,0.75)', color: '#5BC78A', fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6 }}>{s.cost.toFixed(2)}$</div>
                   </div>
-                  <div style={{ padding: 10 }}>
-                    <p style={{ fontSize: 11, color: '#EDE8DB', margin: '0 0 6px', lineHeight: 1.4, maxHeight: 30, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.sujet}</p>
-                    <div style={{ fontSize: 9, color: 'rgba(237,232,219,0.4)', marginBottom: 8 }}>🎤 {s.voixName}</div>
-                    <button onClick={() => supprimer(s.id)} style={{ width: '100%', padding: '5px', borderRadius: 6, border: '1px solid rgba(199,91,78,0.3)', background: 'rgba(199,91,78,0.08)', color: '#C75B4E', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>🗑️ Supprimer</button>
+                  <div style={{ padding: 12 }}>
+                    <p style={{ fontSize: 11, color: '#EDE8DB', margin: '0 0 8px', lineHeight: 1.4, maxHeight: 50, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.prompt}</p>
+                    <div style={{ fontSize: 9, color: 'rgba(237,232,219,0.4)', marginBottom: 8 }}>{s.modelName}</div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <a href={s.videoUrl} target="_blank" rel="noopener noreferrer" style={{ flex: 1, padding: '6px', borderRadius: 6, border: `1px solid ${STUDIA_COLOR}40`, background: `${STUDIA_COLOR}10`, color: STUDIA_COLOR, fontSize: 10, fontWeight: 700, cursor: 'pointer', textAlign: 'center', textDecoration: 'none' }}>📥 Ouvrir</a>
+                      <button onClick={() => supprimer(s.id)} style={{ flex: 1, padding: '6px', borderRadius: 6, border: '1px solid rgba(199,91,78,0.3)', background: 'rgba(199,91,78,0.08)', color: '#C75B4E', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>🗑️ Supprimer</button>
+                    </div>
                   </div>
                 </div>
               )
