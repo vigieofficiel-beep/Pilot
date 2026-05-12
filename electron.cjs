@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, net, dialog, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, session, net, dialog, shell, Menu } = require('electron')
 const path = require('path')
 const crypto = require('crypto')
 const fs = require('fs')
@@ -13,6 +13,61 @@ let searchWindow = null
 let scanWindow = null
 let overlayWindow = null
 let overlayData = null  // Stocke les donnees pour le preload
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MENU CONTEXTUEL CLIC DROIT (Couper / Copier / Coller / Selectionner tout)
+// ═══════════════════════════════════════════════════════════════════════════
+// S'applique a toutes les fenetres Pilot (principale + fenetres reseaux sociaux).
+// Affiche un menu adapte au contexte :
+//  - Champ editable + selection : Couper/Copier/Coller/Tout selectionner
+//  - Champ editable sans selection : Coller/Tout selectionner
+//  - Texte selectionne (non editable) : Copier
+//  - En dev : Inspecter l'element
+// ═══════════════════════════════════════════════════════════════════════════
+
+function attachContextMenu(win) {
+  if (!win || win.isDestroyed()) return
+  win.webContents.on('context-menu', (event, params) => {
+    const { isEditable, selectionText, x, y } = params
+    const hasSelection = selectionText && selectionText.trim().length > 0
+    const isDev = !app.isPackaged
+
+    const template = []
+
+    if (isEditable) {
+      template.push(
+        { label: 'Annuler', role: 'undo', enabled: params.editFlags.canUndo },
+        { label: 'Refaire', role: 'redo', enabled: params.editFlags.canRedo },
+        { type: 'separator' },
+        { label: 'Couper', role: 'cut', enabled: params.editFlags.canCut },
+        { label: 'Copier', role: 'copy', enabled: params.editFlags.canCopy },
+        { label: 'Coller', role: 'paste', enabled: params.editFlags.canPaste },
+        { type: 'separator' },
+        { label: 'Tout selectionner', role: 'selectAll' },
+      )
+    } else if (hasSelection) {
+      template.push(
+        { label: 'Copier', role: 'copy' },
+        { type: 'separator' },
+        { label: 'Tout selectionner', role: 'selectAll' },
+      )
+    } else {
+      template.push(
+        { label: 'Tout selectionner', role: 'selectAll' },
+      )
+    }
+
+    if (isDev) {
+      template.push(
+        { type: 'separator' },
+        { label: 'Inspecter l\'element', click: () => win.webContents.inspectElement(x, y) },
+      )
+    }
+
+    const menu = Menu.buildFromTemplate(template)
+    menu.popup({ window: win })
+  })
+}
 
 // -- SYSTEME LICENCE -----------------------------------------------------
 const LICENCE_FILE = path.join(app.getPath('userData'), 'licence.json')
@@ -95,6 +150,8 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, 'dist/index.html'))
   }
 
+  attachContextMenu(mainWindow)
+
   mainWindow.on('closed', () => { mainWindow = null })
 }
 
@@ -134,6 +191,7 @@ ipcMain.handle('publish-post', async (event, { platform, contenu }) => {
     },
   })
 
+  attachContextMenu(win)
   browserWindows[platform] = win
   win.on('closed', () => { delete browserWindows[platform] })
 
@@ -192,6 +250,7 @@ ipcMain.handle('open-search-window', async (event, { url, prospectId }) => {
     },
   })
 
+  attachContextMenu(searchWindow)
   searchWindow.on('closed', () => { searchWindow = null })
 
   await searchWindow.loadURL(url, {
@@ -318,6 +377,8 @@ ipcMain.handle('scan-platform-posts', async (event, { platform, profileUrl }) =>
       partition: `persist:pilotage_${platform}`,
     },
   })
+
+  attachContextMenu(scanWindow)
 
   return new Promise((resolve) => {
     let resolved = false
@@ -518,6 +579,7 @@ ipcMain.handle('youtube-overlay', async (event, { channelUrl, apiKey }) => {
     },
   })
 
+  attachContextMenu(overlayWindow)
   overlayWindow.on('closed', () => { overlayWindow = null })
 
   await overlayWindow.loadURL(channelUrl, {
