@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import useApiKey from '../hooks/useApiKey'
 
 // ── CONFIG ───────────────────────────────────────────────────────
 const AGENTS_API_URL = 'https://agents.vigie-officiel.com'
+const FAVORIS_STORAGE_KEY = 'pilot_source_favoris'
 
 // ── TENDANCES POLITIQUES JOURNAUX ────────────────────────────────
 const TENDANCES = {
@@ -15,15 +16,32 @@ const TENDANCES = {
   'Je Suis Partout':    { couleur:'#6B3410', label:'Extrême droite' },
 }
 
-// ── SOURCES DOCUMENTAIRES ────────────────────────────────────────
 const SOURCES_HARDCODEES = [
   { id:'gallica', label:'Gallica (BnF)', type:'sru', actif:true, url:'https://gallica.bnf.fr/SRU' },
 ]
 
-const FAVORIS_EXEMPLES = [
-  { id:101, titre:'La marche des fascistes', journal:"L'Humanité", date:'7 fév 1934' },
-  { id:102, titre:'Daladier démissionne',    journal:'Le Temps',   date:'8 fév 1934' },
-]
+// ── HELPERS FAVORIS ──────────────────────────────────────────────
+function chargerFavoris() {
+  try {
+    const stored = localStorage.getItem(FAVORIS_STORAGE_KEY)
+    if (!stored) return []
+    const parsed = JSON.parse(stored)
+    return Array.isArray(parsed) ? parsed : []
+  } catch (err) {
+    console.error('[Source] Erreur chargement favoris:', err)
+    return []
+  }
+}
+
+function sauverFavoris(favoris) {
+  try {
+    localStorage.setItem(FAVORIS_STORAGE_KEY, JSON.stringify(favoris))
+    return true
+  } catch (err) {
+    console.error('[Source] Erreur sauvegarde favoris:', err)
+    return false
+  }
+}
 
 // ── COMPOSANT PRINCIPAL ───────────────────────────────────────────
 export default function PageSource({ project }) {
@@ -38,7 +56,7 @@ export default function PageSource({ project }) {
   const [source,         setSource]         = useState('gallica')
   const [tendances,      setTendances]      = useState([])
   const [typeDoc,        setTypeDoc]        = useState('')
-  const [filtresOuverts, setFiltresOuverts] = useState(false) // FERMES PAR DEFAUT : gain de place
+  const [filtresOuverts, setFiltresOuverts] = useState(false)
   const [sourcesModal,   setSourcesModal]   = useState(false)
 
   // Résultats Gallica
@@ -51,6 +69,63 @@ export default function PageSource({ project }) {
   // Téléchargement R2 (par doc)
   const [theme,           setTheme]           = useState('')
   const [downloadStatus,  setDownloadStatus]  = useState({})
+
+  // ═══════════════ FAVORIS PERSISTANTS ═══════════════
+  const [favoris, setFavoris] = useState(() => chargerFavoris())
+
+  // Refresh quand un autre onglet/composant modifie le localStorage
+  useEffect(() => {
+    const handleStorageChange = (e) => {
+      if (e.key === FAVORIS_STORAGE_KEY) {
+        setFavoris(chargerFavoris())
+      }
+    }
+    window.addEventListener('storage', handleStorageChange)
+    return () => window.removeEventListener('storage', handleStorageChange)
+  }, [])
+
+  // Favoris du projet actif uniquement
+  const favorisProjet = favoris.filter(f => f.projet_id === (project?.id || 'general'))
+
+  // Check si un résultat est en favoris
+  const estFavori = (resultId) => favoris.some(f => f.id === resultId)
+
+  // Toggle favori
+  const toggleFavori = (result) => {
+    let newFavoris
+    if (estFavori(result.id)) {
+      // Retirer
+      newFavoris = favoris.filter(f => f.id !== result.id)
+    } else {
+      // Ajouter
+      const fav = {
+        id: result.id,
+        titre: result.titre,
+        auteur: result.auteur || null,
+        date: result.date || null,
+        editeur: result.editeur || null,
+        type_doc: result.type_doc || null,
+        url_gallica: result.url_gallica,
+        thumbnail: result.thumbnail || null,
+        source: result.source || 'gallica',
+        ocr_quality: result.ocr_quality ?? null,
+        snippet: result.snippet || null,
+        projet_id: project?.id || 'general',
+        theme: theme.trim() || null,
+        ajoute_le: new Date().toISOString(),
+      }
+      newFavoris = [fav, ...favoris]
+    }
+    setFavoris(newFavoris)
+    sauverFavoris(newFavoris)
+  }
+
+  // Supprimer un favori (depuis sidebar)
+  const supprimerFavori = (id) => {
+    const newFavoris = favoris.filter(f => f.id !== id)
+    setFavoris(newFavoris)
+    sauverFavoris(newFavoris)
+  }
 
   const tendancePour = (j) => TENDANCES[j] || { couleur:'#6B7280', label:'Inconnu' }
 
@@ -234,7 +309,7 @@ export default function PageSource({ project }) {
       {/* ═══════════════ COLONNE GAUCHE ═══════════════ */}
       <div style={{flex:1,display:'flex',flexDirection:'column',gap:10,overflow:'hidden',minWidth:0}}>
 
-        {/* HEADER COMPACT — UNE SEULE LIGNE */}
+        {/* HEADER COMPACT */}
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0,gap:14}}>
           <p style={{fontSize:11,color:'rgba(237,232,219,0.5)',margin:0,flex:1}}>
             Archives presse française · Gallica BnF + Cloudflare R2
@@ -248,10 +323,9 @@ export default function PageSource({ project }) {
           </button>
         </div>
 
-        {/* BARRE DE RECHERCHE — Compactée + thème intégré */}
+        {/* BARRE DE RECHERCHE */}
         <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:12,padding:'12px 14px',flexShrink:0}}>
 
-          {/* Ligne 1 : recherche + bouton */}
           <div style={{display:'flex',gap:8,marginBottom:10}}>
             <input
               value={query}
@@ -269,7 +343,6 @@ export default function PageSource({ project }) {
             </button>
           </div>
 
-          {/* Ligne 2 : champ thème (toujours visible, important) */}
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
             <label style={{fontSize:11,color:'rgba(237,232,219,0.5)',fontWeight:700,whiteSpace:'nowrap'}}>Thème R2 :</label>
             <input
@@ -286,7 +359,6 @@ export default function PageSource({ project }) {
             </button>
           </div>
 
-          {/* Filtres avancés repliables */}
           {filtresOuverts && (
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginTop:12,paddingTop:12,borderTop:'1px solid rgba(255,255,255,0.05)'}}>
               <div>
@@ -333,7 +405,7 @@ export default function PageSource({ project }) {
           )}
         </div>
 
-        {/* ERREUR (compacte) */}
+        {/* ERREUR */}
         {error && (
           <div style={{background:'rgba(199,91,78,0.1)',border:'1px solid rgba(199,91,78,0.3)',borderRadius:8,padding:'8px 12px',flexShrink:0,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <p style={{fontSize:11,color:'#C75B4E',margin:0}}>⚠️ {error}</p>
@@ -353,7 +425,7 @@ export default function PageSource({ project }) {
           )}
         </div>
 
-        {/* ═══════════════ ZONE RÉSULTATS (TRÈS GRANDE) ═══════════════ */}
+        {/* ═══════════════ ZONE RÉSULTATS ═══════════════ */}
         <div style={{
           display:'flex',
           flexDirection:'column',
@@ -362,12 +434,10 @@ export default function PageSource({ project }) {
           paddingRight:6,
           flex:'1 1 auto',
           minHeight:0,
-          // Scrollbar custom visible
           scrollbarWidth:'thin',
           scrollbarColor:`${project.color}60 rgba(255,255,255,0.05)`,
         }}>
 
-          {/* État loading */}
           {loading && (
             <div style={{padding:40,textAlign:'center',color:'rgba(237,232,219,0.5)'}}>
               <p style={{fontSize:28,margin:'0 0 8px'}}>⏳</p>
@@ -375,7 +445,6 @@ export default function PageSource({ project }) {
             </div>
           )}
 
-          {/* État pas encore cherché */}
           {!loading && !searched && (
             <div style={{padding:60,textAlign:'center',color:'rgba(237,232,219,0.3)'}}>
               <p style={{fontSize:40,margin:'0 0 12px'}}>📚</p>
@@ -384,7 +453,6 @@ export default function PageSource({ project }) {
             </div>
           )}
 
-          {/* État pas de résultats */}
           {!loading && searched && results.length===0 && !error && (
             <div style={{padding:40,textAlign:'center',color:'rgba(237,232,219,0.4)'}}>
               <p style={{fontSize:28,margin:'0 0 8px'}}>🔎</p>
@@ -393,12 +461,12 @@ export default function PageSource({ project }) {
             </div>
           )}
 
-          {/* Résultats Gallica */}
           {!loading && results.map(r => {
             const journalDetecte = Object.keys(TENDANCES).find(j =>
               (r.titre || '').includes(j) || (r.editeur || '').includes(j)
             )
             const t = tendancePour(journalDetecte || r.editeur || '')
+            const isFav = estFavori(r.id)
 
             return (
               <div
@@ -417,7 +485,13 @@ export default function PageSource({ project }) {
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:5,gap:10}}>
                     <h4 style={{fontSize:13,fontWeight:700,color:'#EDE8DB',margin:0,lineHeight:1.4,flex:1}}>{r.titre}</h4>
-                    <button title="Ajouter aux favoris" style={{background:'transparent',border:'none',color:'rgba(237,232,219,0.3)',fontSize:16,cursor:'pointer',padding:0,lineHeight:1}}>☆</button>
+                    <button
+                      onClick={()=>toggleFavori(r)}
+                      title={isFav?'Retirer des favoris':'Ajouter aux favoris'}
+                      style={{background:'transparent',border:'none',color:isFav?'#D4A853':'rgba(237,232,219,0.3)',fontSize:18,cursor:'pointer',padding:0,lineHeight:1,transition:'color 0.2s'}}
+                    >
+                      {isFav?'★':'☆'}
+                    </button>
                   </div>
 
                   <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6,fontSize:10,flexWrap:'wrap'}}>
@@ -466,44 +540,100 @@ export default function PageSource({ project }) {
         </div>
       </div>
 
-      {/* ═══════════════ COLONNE DROITE : FAVORIS ═══════════════ */}
-      <div style={{width:260,display:'flex',flexDirection:'column',gap:8,overflowY:'auto',flexShrink:0}}>
+      {/* ═══════════════ COLONNE DROITE : FAVORIS PERSISTANTS ═══════════════ */}
+      <div style={{width:260,display:'flex',flexDirection:'column',gap:8,flexShrink:0,overflow:'hidden'}}>
 
-        <h3 style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:0}}>
-          ⭐ Favoris ({FAVORIS_EXEMPLES.length})
-        </h3>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+          <h3 style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:0}}>
+            ⭐ Favoris {project?.id || 'general'} ({favorisProjet.length})
+          </h3>
+          {favoris.length > favorisProjet.length && (
+            <span style={{fontSize:9,color:'rgba(237,232,219,0.3)'}}>
+              +{favoris.length - favorisProjet.length} autres
+            </span>
+          )}
+        </div>
 
-        {FAVORIS_EXEMPLES.map(f => {
-          const t = tendancePour(f.journal)
-          return (
-            <div
-              key={f.id}
-              style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:8,padding:'8px 10px',borderLeft:`3px solid ${t.couleur}`}}
-            >
-              <p style={{fontSize:11,fontWeight:700,color:'#EDE8DB',margin:'0 0 3px',lineHeight:1.4}}>{f.titre}</p>
-              <p style={{fontSize:9,color:'rgba(237,232,219,0.4)',margin:0}}>● {f.journal} · {f.date}</p>
+        {/* Liste favoris du projet — scrollable */}
+        <div style={{
+          flex:'1 1 auto',
+          minHeight:0,
+          overflowY:'auto',
+          display:'flex',
+          flexDirection:'column',
+          gap:6,
+          paddingRight:4,
+          scrollbarWidth:'thin',
+          scrollbarColor:`${project.color}40 transparent`,
+        }}>
+          {favorisProjet.length === 0 ? (
+            <div style={{padding:'20px 12px',textAlign:'center',color:'rgba(237,232,219,0.3)',background:'rgba(255,255,255,0.02)',borderRadius:8,border:'1px dashed rgba(255,255,255,0.08)'}}>
+              <p style={{fontSize:20,margin:'0 0 6px'}}>⭐</p>
+              <p style={{fontSize:11,margin:'0 0 3px',fontWeight:700}}>Aucun favori</p>
+              <p style={{fontSize:9,margin:0,lineHeight:1.5}}>Clique sur ☆ d'un résultat pour l'ajouter</p>
             </div>
-          )
-        })}
+          ) : (
+            favorisProjet.map(f => {
+              const journalDetecte = Object.keys(TENDANCES).find(j =>
+                (f.titre || '').includes(j) || (f.editeur || '').includes(j)
+              )
+              const t = tendancePour(journalDetecte || f.editeur || '')
 
-        <div style={{height:1,background:'rgba(255,255,255,0.06)',margin:'6px 0'}}/>
+              return (
+                <div
+                  key={f.id}
+                  style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:8,padding:'8px 10px',borderLeft:`3px solid ${t.couleur}`,flexShrink:0,position:'relative'}}
+                >
+                  <button
+                    onClick={()=>supprimerFavori(f.id)}
+                    title="Retirer des favoris"
+                    style={{position:'absolute',top:6,right:6,background:'transparent',border:'none',color:'rgba(237,232,219,0.3)',fontSize:11,cursor:'pointer',padding:'2px 4px',lineHeight:1}}
+                  >
+                    ✕
+                  </button>
+                  <p style={{fontSize:11,fontWeight:700,color:'#EDE8DB',margin:'0 0 3px',lineHeight:1.4,paddingRight:16}}>{f.titre}</p>
+                  <p style={{fontSize:9,color:'rgba(237,232,219,0.4)',margin:'0 0 4px'}}>
+                    {f.auteur && <span>{f.auteur}</span>}
+                    {f.auteur && f.date && <span> · </span>}
+                    {f.date && <span>{f.date}</span>}
+                  </p>
+                  {f.theme && (
+                    <p style={{fontSize:8,color:`${project.color}cc`,margin:'0 0 4px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em'}}>
+                      #{f.theme}
+                    </p>
+                  )}
+                  <a
+                    href={f.url_gallica}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{fontSize:9,color:project.color,textDecoration:'none'}}
+                  >
+                    📖 Lire sur Gallica →
+                  </a>
+                </div>
+              )
+            })
+          )}
+        </div>
 
-        <p style={{fontSize:9,fontWeight:700,color:'rgba(237,232,219,0.3)',textTransform:'uppercase',letterSpacing:'0.08em',margin:'0 0 4px'}}>Actions</p>
+        <div style={{height:1,background:'rgba(255,255,255,0.06)',flexShrink:0}}/>
 
-        <button disabled style={{padding:'9px 11px',borderRadius:8,border:'none',background:`${project.color}30`,color:`${project.color}`,fontSize:11,fontWeight:700,cursor:'not-allowed',textAlign:'left'}}>
+        <p style={{fontSize:9,fontWeight:700,color:'rgba(237,232,219,0.3)',textTransform:'uppercase',letterSpacing:'0.08em',margin:0,flexShrink:0}}>Actions</p>
+
+        <button disabled style={{padding:'9px 11px',borderRadius:8,border:'none',background:`${project.color}30`,color:`${project.color}`,fontSize:11,fontWeight:700,cursor:'not-allowed',textAlign:'left',flexShrink:0}}>
           ✨ Générer rapport IA
         </button>
-        <button disabled style={{padding:'9px 11px',borderRadius:8,border:'1px solid rgba(255,255,255,0.1)',background:'rgba(255,255,255,0.03)',color:'rgba(237,232,219,0.4)',fontSize:11,fontWeight:700,cursor:'not-allowed',textAlign:'left'}}>
+        <button disabled style={{padding:'9px 11px',borderRadius:8,border:'1px solid rgba(255,255,255,0.1)',background:'rgba(255,255,255,0.03)',color:'rgba(237,232,219,0.4)',fontSize:11,fontWeight:700,cursor:'not-allowed',textAlign:'left',flexShrink:0}}>
           📄 Exporter Markdown
         </button>
-        <button disabled style={{padding:'9px 11px',borderRadius:8,border:'1px solid rgba(255,255,255,0.1)',background:'rgba(255,255,255,0.03)',color:'rgba(237,232,219,0.4)',fontSize:11,fontWeight:700,cursor:'not-allowed',textAlign:'left'}}>
+        <button disabled style={{padding:'9px 11px',borderRadius:8,border:'1px solid rgba(255,255,255,0.1)',background:'rgba(255,255,255,0.03)',color:'rgba(237,232,219,0.4)',fontSize:11,fontWeight:700,cursor:'not-allowed',textAlign:'left',flexShrink:0}}>
           📝 Ajouter au script
         </button>
 
-        <div style={{marginTop:'auto',padding:'9px 11px',background:'rgba(91,199,138,0.08)',border:'1px solid rgba(91,199,138,0.2)',borderRadius:8}}>
-          <p style={{fontSize:10,fontWeight:700,color:'#5BC78A',margin:'0 0 4px'}}>✅ V1 Recherche + R2</p>
+        <div style={{padding:'9px 11px',background:'rgba(91,199,138,0.08)',border:'1px solid rgba(91,199,138,0.2)',borderRadius:8,flexShrink:0}}>
+          <p style={{fontSize:10,fontWeight:700,color:'#5BC78A',margin:'0 0 4px'}}>✅ V2 Favoris persistants</p>
           <p style={{fontSize:9,color:'rgba(237,232,219,0.5)',margin:0,lineHeight:1.5}}>
-            Gallica SRU et stockage R2 actifs. Prochaine étape : favoris persistants + Wikipedia, OpenAlex.
+            Favoris stockés en local par projet. Prochain : Wikipedia + OpenAlex.
           </p>
         </div>
       </div>
