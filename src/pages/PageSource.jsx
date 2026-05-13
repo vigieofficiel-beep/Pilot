@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import useApiKey from '../hooks/useApiKey'
+
+// ── CONFIG ───────────────────────────────────────────────────────
+const AGENTS_API_URL = 'https://agents.vigie-officiel.com'
 
 // ── TENDANCES POLITIQUES JOURNAUX ────────────────────────────────
-// Mapping journal -> couleur + label politique. Servira au filtre Tendance
-// et au surlignage des bordures gauche des résultats.
 const TENDANCES = {
   "L'Humanité":         { couleur:'#C75B4E', label:'Communiste / ouvrier' },
   'Le Populaire':       { couleur:'#EA4B71', label:'Socialiste' },
@@ -14,38 +16,8 @@ const TENDANCES = {
 }
 
 // ── SOURCES DOCUMENTAIRES ────────────────────────────────────────
-// Sources hardcodées (préconfigurées par Pilot) + futures sources custom
-// ajoutées manuellement par l'utilisateur (URL + clé API + nom).
 const SOURCES_HARDCODEES = [
   { id:'gallica', label:'Gallica (BnF)', type:'sru', actif:true, url:'https://gallica.bnf.fr/SRU' },
-]
-
-// ── EXEMPLES DE RÉSULTATS (squelette non fonctionnel) ────────────
-const RESULTATS_EXEMPLES = [
-  {
-    id:1,
-    titre:'Le scandale Stavisky éclabousse la République',
-    journal:"L'Humanité",
-    date:'12 janv 1934',
-    snippet:"Les révélations sur l'escroquerie de Sacha Stavisky ébranlent les milieux politiques et financiers parisiens. La presse ouvrière dénonce un système de corruption généralisé...",
-    url:'https://gallica.bnf.fr/...',
-  },
-  {
-    id:2,
-    titre:'Affaire Stavisky : nouvelles révélations',
-    journal:'Le Figaro',
-    date:'13 janv 1934',
-    snippet:"L'enquête révèle des ramifications jusqu'au plus haut niveau de l'État. Les magistrats poursuivent leurs investigations avec une discrétion remarquée...",
-    url:'https://gallica.bnf.fr/...',
-  },
-  {
-    id:3,
-    titre:'Honte sur la République parlementaire',
-    journal:"L'Action Française",
-    date:'14 janv 1934',
-    snippet:"Encore un scandale qui démontre la corruption généralisée du régime. Maurras appelle à la mobilisation des ligues face à la décomposition du système...",
-    url:'https://gallica.bnf.fr/...',
-  },
 ]
 
 const FAVORIS_EXEMPLES = [
@@ -55,19 +27,162 @@ const FAVORIS_EXEMPLES = [
 
 // ── COMPOSANT PRINCIPAL ───────────────────────────────────────────
 export default function PageSource({ project }) {
+  // Récupère la clé dop_ depuis le Coffre-fort
+  const apiKey = useApiKey('agents doppler')
+
+  // Recherche
   const [query,          setQuery]          = useState('')
   const [dateDebut,      setDateDebut]      = useState('1900')
-  const [dateFin,        setDateFin]        = useState('1945')
+  const [dateFin,        setDateFin]        = useState('1960')
   const [journal,        setJournal]        = useState('Tous')
   const [source,         setSource]         = useState('gallica')
   const [tendances,      setTendances]      = useState([])
-  const [filtresOuverts, setFiltresOuverts] = useState(true)
+  const [typeDoc,        setTypeDoc]        = useState('')
+  const [filtresOuverts, setFiltresOuverts] = useState(false) // FERMES PAR DEFAUT : gain de place
   const [sourcesModal,   setSourcesModal]   = useState(false)
+
+  // Résultats Gallica
+  const [results,    setResults]    = useState([])
+  const [totalHits,  setTotalHits]  = useState(0)
+  const [loading,    setLoading]    = useState(false)
+  const [error,      setError]      = useState(null)
+  const [searched,   setSearched]   = useState(false)
+
+  // Téléchargement R2 (par doc)
+  const [theme,           setTheme]           = useState('')
+  const [downloadStatus,  setDownloadStatus]  = useState({})
 
   const tendancePour = (j) => TENDANCES[j] || { couleur:'#6B7280', label:'Inconnu' }
 
+  // ── RECHERCHE GALLICA ──────────────────────────────────────────
+  const handleSearch = async () => {
+    if (!query.trim()) {
+      setError('Saisis un terme de recherche')
+      return
+    }
+    if (!apiKey) {
+      setError('Cle API Agents Doppler introuvable dans le Coffre-fort')
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+    setSearched(true)
+    setResults([])
+    setTotalHits(0)
+
+    try {
+      const body = {
+        query: query.trim(),
+        source: source,
+        max_results: 20,
+      }
+      if (dateDebut) body.date_debut = dateDebut
+      if (dateFin)   body.date_fin   = dateFin
+      if (typeDoc)   body.type_doc   = typeDoc
+
+      const response = await fetch(`${AGENTS_API_URL}/sources/recherche`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiKey,
+        },
+        body: JSON.stringify(body),
+      })
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}))
+        throw new Error(errData.detail || `Erreur ${response.status}`)
+      }
+
+      const data = await response.json()
+      setResults(data.results || [])
+      setTotalHits(data.total || 0)
+    } catch (err) {
+      console.error('[Source] Erreur recherche:', err)
+      setError(err.message || 'Erreur recherche Gallica')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ── TELECHARGEMENT R2 ──────────────────────────────────────────
+  const handleDownload = async (result) => {
+    if (!apiKey) {
+      setError('Cle API Agents Doppler introuvable')
+      return
+    }
+    if (!theme.trim()) {
+      setError('Indique un theme dans le champ ci-dessus (ex: ovnis, stavisky, 1968)')
+      return
+    }
+
+    const gallicaId = result.id
+    setDownloadStatus(prev => ({ ...prev, [gallicaId]: 'loading' }))
+    setError(null)
+
+    try {
+      const body = {
+        url_gallica: result.url_gallica,
+        titre: result.titre,
+        projet_id: project?.id || 'general',
+        theme: theme.trim().toLowerCase(),
+        auteur: result.auteur || '',
+        date: result.date || '',
+        type_telechargement: 'both',
+      }
+
+      const response = await fetch(`${AGENTS_API_URL}/sources/telecharger`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': apiKey,
+        },
+        body: JSON.stringify(body),
+      })
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}))
+        throw new Error(errData.detail || `Erreur ${response.status}`)
+      }
+
+      const data = await response.json()
+      console.log('[Source] Telechargement OK:', data)
+      setDownloadStatus(prev => ({ ...prev, [gallicaId]: 'ok' }))
+    } catch (err) {
+      console.error('[Source] Erreur telechargement:', err)
+      setDownloadStatus(prev => ({ ...prev, [gallicaId]: 'error' }))
+      setError(`Téléchargement échoué : ${err.message}`)
+    }
+  }
+
+  // ── HELPERS UI ─────────────────────────────────────────────────
+  const getDownloadButtonLabel = (id) => {
+    const status = downloadStatus[id]
+    if (status === 'loading') return '⏳ En cours...'
+    if (status === 'ok')      return '✅ Stocké'
+    if (status === 'error')   return '⚠️ Erreur'
+    return '📥 Télécharger dans R2'
+  }
+
+  const getDownloadButtonStyle = (id) => {
+    const status = downloadStatus[id]
+    const base = {
+      padding: '5px 10px',
+      borderRadius: 7,
+      fontSize: 10,
+      fontWeight: 700,
+      cursor: status === 'loading' ? 'wait' : 'pointer',
+      border: '1px solid',
+    }
+    if (status === 'ok')      return { ...base, borderColor: '#5BC78A', background: 'rgba(91,199,138,0.1)', color: '#5BC78A' }
+    if (status === 'error')   return { ...base, borderColor: '#C75B4E', background: 'rgba(199,91,78,0.1)', color: '#C75B4E' }
+    if (status === 'loading') return { ...base, borderColor: 'rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.05)', color: 'rgba(237,232,219,0.5)' }
+    return { ...base, borderColor: `${project.color}40`, background: `${project.color}10`, color: project.color }
+  }
+
   return (
-    <div style={{display:'flex',gap:20,height:'100%'}}>
+    <div style={{display:'flex',gap:20,height:'100%',overflow:'hidden'}}>
 
       {/* ───── MODALE GESTION SOURCES ───── */}
       {sourcesModal && (
@@ -117,105 +232,100 @@ export default function PageSource({ project }) {
       )}
 
       {/* ═══════════════ COLONNE GAUCHE ═══════════════ */}
-      <div style={{flex:1,display:'flex',flexDirection:'column',gap:14,overflow:'hidden'}}>
+      <div style={{flex:1,display:'flex',flexDirection:'column',gap:10,overflow:'hidden',minWidth:0}}>
 
-        {/* HEADER */}
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
-          <div>
-            <h3 style={{fontFamily:"'Georgia',serif",fontSize:18,fontWeight:700,color:'#EDE8DB',margin:'0 0 2px'}}>📰 Source</h3>
-            <p style={{fontSize:11,color:'rgba(237,232,219,0.4)',margin:0}}>Archives presse française · Gallica BnF + sources custom</p>
-          </div>
+        {/* HEADER COMPACT — UNE SEULE LIGNE */}
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0,gap:14}}>
+          <p style={{fontSize:11,color:'rgba(237,232,219,0.5)',margin:0,flex:1}}>
+            Archives presse française · Gallica BnF + Cloudflare R2
+            {!apiKey && <span style={{color:'#C75B4E',marginLeft:8,fontWeight:700}}>⚠️ Clé Doppler manquante</span>}
+          </p>
           <button
             onClick={()=>setSourcesModal(true)}
-            style={{padding:'7px 14px',borderRadius:10,border:`1px solid ${project.color}40`,background:`${project.color}15`,color:project.color,fontSize:12,fontWeight:700,cursor:'pointer'}}
+            style={{padding:'6px 12px',borderRadius:8,border:`1px solid ${project.color}40`,background:`${project.color}15`,color:project.color,fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}
           >
             ⚙️ Gérer les sources
           </button>
         </div>
 
-        {/* BARRE DE RECHERCHE + FILTRES */}
-        <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:14,padding:20,flexShrink:0}}>
+        {/* BARRE DE RECHERCHE — Compactée + thème intégré */}
+        <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:12,padding:'12px 14px',flexShrink:0}}>
 
-          <div style={{display:'flex',gap:8,marginBottom:14}}>
+          {/* Ligne 1 : recherche + bouton */}
+          <div style={{display:'flex',gap:8,marginBottom:10}}>
             <input
               value={query}
               onChange={e=>setQuery(e.target.value)}
+              onKeyDown={e=>{if(e.key==='Enter')handleSearch()}}
               placeholder="Rechercher un sujet, un nom, un événement…"
-              style={{flex:1,padding:'12px 16px',borderRadius:10,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:14,outline:'none',fontFamily:"'Nunito Sans',sans-serif"}}
+              style={{flex:1,padding:'10px 14px',borderRadius:10,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:13,outline:'none',fontFamily:"'Nunito Sans',sans-serif"}}
             />
             <button
-              disabled
-              style={{padding:'12px 22px',borderRadius:10,border:'none',background:`${project.color}40`,color:'#0D1B2A',fontSize:13,fontWeight:800,cursor:'not-allowed'}}
-              title="Pipeline Gallica à brancher (étape suivante)"
+              onClick={handleSearch}
+              disabled={loading || !apiKey}
+              style={{padding:'10px 20px',borderRadius:10,border:'none',background:loading?`${project.color}40`:project.color,color:'#0D1B2A',fontSize:12,fontWeight:800,cursor:loading||!apiKey?'not-allowed':'pointer',opacity:!apiKey?0.5:1,whiteSpace:'nowrap'}}
             >
-              🔍 Chercher
+              {loading ? '⏳ Recherche...' : '🔍 Chercher'}
             </button>
           </div>
 
-          <button
-            onClick={()=>setFiltresOuverts(!filtresOuverts)}
-            style={{background:'transparent',border:'none',color:'rgba(237,232,219,0.5)',fontSize:11,fontWeight:700,cursor:'pointer',padding:0,marginBottom:filtresOuverts?14:0}}
-          >
-            {filtresOuverts?'▼':'▶'} Filtres avancés
-          </button>
+          {/* Ligne 2 : champ thème (toujours visible, important) */}
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <label style={{fontSize:11,color:'rgba(237,232,219,0.5)',fontWeight:700,whiteSpace:'nowrap'}}>Thème R2 :</label>
+            <input
+              value={theme}
+              onChange={e=>setTheme(e.target.value)}
+              placeholder="ovnis, stavisky, 1968…"
+              style={{flex:1,padding:'7px 10px',borderRadius:8,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:12,outline:'none'}}
+            />
+            <button
+              onClick={()=>setFiltresOuverts(!filtresOuverts)}
+              style={{background:'transparent',border:'1px solid rgba(255,255,255,0.1)',color:'rgba(237,232,219,0.6)',fontSize:11,fontWeight:700,cursor:'pointer',padding:'7px 10px',borderRadius:8,whiteSpace:'nowrap'}}
+            >
+              {filtresOuverts?'▼':'▶'} Filtres
+            </button>
+          </div>
 
+          {/* Filtres avancés repliables */}
           {filtresOuverts && (
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginTop:12,paddingTop:12,borderTop:'1px solid rgba(255,255,255,0.05)'}}>
               <div>
-                <label style={{fontSize:10,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Période</label>
+                <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Période</label>
                 <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                  <input
-                    type="number"
-                    value={dateDebut}
-                    onChange={e=>setDateDebut(e.target.value)}
-                    min="1800" max="2025"
-                    style={{flex:1,padding:'8px 10px',borderRadius:8,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:12,outline:'none'}}
-                  />
-                  <span style={{fontSize:11,color:'rgba(237,232,219,0.3)'}}>→</span>
-                  <input
-                    type="number"
-                    value={dateFin}
-                    onChange={e=>setDateFin(e.target.value)}
-                    min="1800" max="2025"
-                    style={{flex:1,padding:'8px 10px',borderRadius:8,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:12,outline:'none'}}
-                  />
+                  <input type="number" value={dateDebut} onChange={e=>setDateDebut(e.target.value)} min="1800" max="2025"
+                    style={{flex:1,padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}/>
+                  <span style={{fontSize:10,color:'rgba(237,232,219,0.3)'}}>→</span>
+                  <input type="number" value={dateFin} onChange={e=>setDateFin(e.target.value)} min="1800" max="2025"
+                    style={{flex:1,padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}/>
                 </div>
               </div>
 
               <div>
-                <label style={{fontSize:10,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Journal</label>
-                <select
-                  value={journal}
-                  onChange={e=>setJournal(e.target.value)}
-                  style={{width:'100%',padding:'8px 10px',borderRadius:8,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:12,outline:'none'}}
-                >
-                  <option value="Tous">Tous les journaux</option>
-                  {Object.keys(TENDANCES).map(j => <option key={j} value={j}>{j}</option>)}
+                <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Type de document</label>
+                <select value={typeDoc} onChange={e=>setTypeDoc(e.target.value)}
+                  style={{width:'100%',padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}>
+                  <option value="">Tous</option>
+                  <option value="fascicule">Presse / fascicules</option>
+                  <option value="monographie">Livres / monographies</option>
+                  <option value="image">Images</option>
+                  <option value="manuscrit">Manuscrits</option>
                 </select>
               </div>
 
               <div>
-                <label style={{fontSize:10,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Source</label>
-                <select
-                  value={source}
-                  onChange={e=>setSource(e.target.value)}
-                  style={{width:'100%',padding:'8px 10px',borderRadius:8,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:12,outline:'none'}}
-                >
+                <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Source</label>
+                <select value={source} onChange={e=>setSource(e.target.value)}
+                  style={{width:'100%',padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}>
                   {SOURCES_HARDCODEES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
               </div>
 
               <div>
-                <label style={{fontSize:10,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:4,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Tendance politique</label>
+                <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Tendance politique</label>
                 <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
                   {['Gauche','Centre','Droite'].map(t => (
-                    <button
-                      key={t}
-                      onClick={()=>setTendances(prev=>prev.includes(t)?prev.filter(x=>x!==t):[...prev,t])}
-                      style={{padding:'5px 10px',borderRadius:14,border:`1px solid ${tendances.includes(t)?project.color:'rgba(255,255,255,0.1)'}`,background:tendances.includes(t)?`${project.color}20`:'transparent',color:tendances.includes(t)?project.color:'rgba(237,232,219,0.5)',fontSize:10,fontWeight:700,cursor:'pointer'}}
-                    >
-                      {t}
-                    </button>
+                    <button key={t} onClick={()=>setTendances(prev=>prev.includes(t)?prev.filter(x=>x!==t):[...prev,t])}
+                      style={{padding:'4px 9px',borderRadius:12,border:`1px solid ${tendances.includes(t)?project.color:'rgba(255,255,255,0.1)'}`,background:tendances.includes(t)?`${project.color}20`:'transparent',color:tendances.includes(t)?project.color:'rgba(237,232,219,0.5)',fontSize:10,fontWeight:700,cursor:'pointer'}}>{t}</button>
                   ))}
                 </div>
               </div>
@@ -223,41 +333,132 @@ export default function PageSource({ project }) {
           )}
         </div>
 
+        {/* ERREUR (compacte) */}
+        {error && (
+          <div style={{background:'rgba(199,91,78,0.1)',border:'1px solid rgba(199,91,78,0.3)',borderRadius:8,padding:'8px 12px',flexShrink:0,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <p style={{fontSize:11,color:'#C75B4E',margin:0}}>⚠️ {error}</p>
+            <button onClick={()=>setError(null)} style={{background:'transparent',border:'none',color:'#C75B4E',cursor:'pointer',fontSize:14,padding:0}}>✕</button>
+          </div>
+        )}
+
         {/* LABEL RESULTATS */}
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0,padding:'0 4px'}}>
-          <p style={{fontSize:11,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:0}}>
-            Résultats ({RESULTATS_EXEMPLES.length} exemples)
+          <p style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:0}}>
+            {searched
+              ? `Résultats (${results.length} affichés sur ${totalHits} trouvés)`
+              : 'Lance une recherche pour explorer Gallica'}
           </p>
-          <p style={{fontSize:10,color:'rgba(212,168,83,0.7)',margin:0}}>⚠️ Données fictives — pipeline Gallica à brancher</p>
+          {searched && results.length>0 && (
+            <p style={{fontSize:10,color:'rgba(91,199,138,0.7)',margin:0}}>✅ Pipeline Gallica + R2 actif</p>
+          )}
         </div>
 
-        {/* LISTE RÉSULTATS */}
-        <div style={{display:'flex',flexDirection:'column',gap:8,overflowY:'auto',paddingRight:4}}>
-          {RESULTATS_EXEMPLES.map(r => {
-            const t = tendancePour(r.journal)
+        {/* ═══════════════ ZONE RÉSULTATS (TRÈS GRANDE) ═══════════════ */}
+        <div style={{
+          display:'flex',
+          flexDirection:'column',
+          gap:8,
+          overflowY:'auto',
+          paddingRight:6,
+          flex:'1 1 auto',
+          minHeight:0,
+          // Scrollbar custom visible
+          scrollbarWidth:'thin',
+          scrollbarColor:`${project.color}60 rgba(255,255,255,0.05)`,
+        }}>
+
+          {/* État loading */}
+          {loading && (
+            <div style={{padding:40,textAlign:'center',color:'rgba(237,232,219,0.5)'}}>
+              <p style={{fontSize:28,margin:'0 0 8px'}}>⏳</p>
+              <p style={{fontSize:13,margin:0}}>Recherche dans Gallica…</p>
+            </div>
+          )}
+
+          {/* État pas encore cherché */}
+          {!loading && !searched && (
+            <div style={{padding:60,textAlign:'center',color:'rgba(237,232,219,0.3)'}}>
+              <p style={{fontSize:40,margin:'0 0 12px'}}>📚</p>
+              <p style={{fontSize:14,margin:'0 0 6px',fontWeight:700}}>Aucune recherche effectuée</p>
+              <p style={{fontSize:11,margin:0,lineHeight:1.5}}>Saisis un terme dans la barre ci-dessus et clique sur Chercher</p>
+            </div>
+          )}
+
+          {/* État pas de résultats */}
+          {!loading && searched && results.length===0 && !error && (
+            <div style={{padding:40,textAlign:'center',color:'rgba(237,232,219,0.4)'}}>
+              <p style={{fontSize:28,margin:'0 0 8px'}}>🔎</p>
+              <p style={{fontSize:13,margin:0}}>Aucun résultat pour "{query}"</p>
+              <p style={{fontSize:11,margin:'4px 0 0',color:'rgba(237,232,219,0.3)'}}>Essaie avec d'autres mots-clés ou élargis la période</p>
+            </div>
+          )}
+
+          {/* Résultats Gallica */}
+          {!loading && results.map(r => {
+            const journalDetecte = Object.keys(TENDANCES).find(j =>
+              (r.titre || '').includes(j) || (r.editeur || '').includes(j)
+            )
+            const t = tendancePour(journalDetecte || r.editeur || '')
+
             return (
               <div
                 key={r.id}
-                style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,padding:'14px 16px',borderLeft:`4px solid ${t.couleur}`}}
+                style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:10,padding:'12px 14px',borderLeft:`4px solid ${t.couleur}`,display:'flex',gap:12,flexShrink:0}}
               >
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6,gap:10}}>
-                  <h4 style={{fontSize:14,fontWeight:700,color:'#EDE8DB',margin:0,lineHeight:1.4,flex:1}}>{r.titre}</h4>
-                  <button title="Ajouter aux favoris" style={{background:'transparent',border:'none',color:'rgba(237,232,219,0.3)',fontSize:18,cursor:'pointer',padding:0,lineHeight:1}}>☆</button>
-                </div>
+                {r.thumbnail && (
+                  <img
+                    src={r.thumbnail}
+                    alt=""
+                    style={{width:56,height:74,objectFit:'cover',borderRadius:5,flexShrink:0,background:'rgba(0,0,0,0.3)'}}
+                    onError={e=>{e.target.style.display='none'}}
+                  />
+                )}
 
-                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,fontSize:11,flexWrap:'wrap'}}>
-                  <span style={{color:t.couleur,fontWeight:700}}>● {r.journal}</span>
-                  <span style={{color:'rgba(237,232,219,0.3)'}}>·</span>
-                  <span style={{color:'rgba(237,232,219,0.5)'}}>{r.date}</span>
-                  <span style={{color:'rgba(237,232,219,0.3)'}}>·</span>
-                  <span style={{fontSize:10,color:'rgba(237,232,219,0.4)',background:'rgba(255,255,255,0.04)',padding:'1px 6px',borderRadius:6}}>{t.label}</span>
-                </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:5,gap:10}}>
+                    <h4 style={{fontSize:13,fontWeight:700,color:'#EDE8DB',margin:0,lineHeight:1.4,flex:1}}>{r.titre}</h4>
+                    <button title="Ajouter aux favoris" style={{background:'transparent',border:'none',color:'rgba(237,232,219,0.3)',fontSize:16,cursor:'pointer',padding:0,lineHeight:1}}>☆</button>
+                  </div>
 
-                <p style={{fontSize:12,color:'rgba(237,232,219,0.6)',lineHeight:1.6,margin:'0 0 10px'}}>{r.snippet}</p>
+                  <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6,fontSize:10,flexWrap:'wrap'}}>
+                    {r.auteur && (<><span style={{color:'rgba(237,232,219,0.7)',fontWeight:700}}>{r.auteur}</span><span style={{color:'rgba(237,232,219,0.3)'}}>·</span></>)}
+                    {r.date && (<><span style={{color:'rgba(237,232,219,0.5)'}}>{r.date}</span><span style={{color:'rgba(237,232,219,0.3)'}}>·</span></>)}
+                    {r.editeur && (<><span style={{color:'rgba(237,232,219,0.5)'}}>{r.editeur}</span><span style={{color:'rgba(237,232,219,0.3)'}}>·</span></>)}
+                    {r.type_doc && <span style={{fontSize:9,color:'rgba(237,232,219,0.4)',background:'rgba(255,255,255,0.04)',padding:'1px 6px',borderRadius:5}}>{r.type_doc}</span>}
+                    {r.ocr_quality != null && (
+                      <span style={{fontSize:9,color:r.ocr_quality>80?'#5BC78A':r.ocr_quality>60?'#D4A853':'#C75B4E',background:'rgba(255,255,255,0.04)',padding:'1px 6px',borderRadius:5}}>
+                        OCR {Math.round(r.ocr_quality)}%
+                      </span>
+                    )}
+                  </div>
 
-                <div style={{display:'flex',gap:6}}>
-                  <button style={{padding:'5px 10px',borderRadius:7,border:`1px solid ${project.color}40`,background:`${project.color}10`,color:project.color,fontSize:10,fontWeight:700,cursor:'pointer'}}>📖 Lire sur Gallica</button>
-                  <button style={{padding:'5px 10px',borderRadius:7,border:'1px solid rgba(255,255,255,0.1)',background:'transparent',color:'rgba(237,232,219,0.5)',fontSize:10,cursor:'pointer'}}>📋 Copier citation</button>
+                  {r.snippet && (
+                    <p style={{fontSize:11,color:'rgba(237,232,219,0.6)',lineHeight:1.5,margin:'0 0 8px'}}>{r.snippet}</p>
+                  )}
+
+                  <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                    <a
+                      href={r.url_gallica}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{padding:'4px 9px',borderRadius:6,border:`1px solid ${project.color}40`,background:`${project.color}10`,color:project.color,fontSize:10,fontWeight:700,cursor:'pointer',textDecoration:'none'}}
+                    >
+                      📖 Lire sur Gallica
+                    </a>
+                    <button
+                      onClick={()=>handleDownload(r)}
+                      disabled={downloadStatus[r.id]==='loading' || downloadStatus[r.id]==='ok'}
+                      style={getDownloadButtonStyle(r.id)}
+                    >
+                      {getDownloadButtonLabel(r.id)}
+                    </button>
+                    <button
+                      onClick={()=>navigator.clipboard.writeText(`${r.titre} — ${r.auteur || 'Anonyme'} (${r.date || 'n.d.'}). ${r.url_gallica}`)}
+                      style={{padding:'4px 9px',borderRadius:6,border:'1px solid rgba(255,255,255,0.1)',background:'transparent',color:'rgba(237,232,219,0.5)',fontSize:10,cursor:'pointer'}}
+                    >
+                      📋 Copier
+                    </button>
+                  </div>
                 </div>
               </div>
             )
@@ -266,9 +467,9 @@ export default function PageSource({ project }) {
       </div>
 
       {/* ═══════════════ COLONNE DROITE : FAVORIS ═══════════════ */}
-      <div style={{width:280,display:'flex',flexDirection:'column',gap:10,overflowY:'auto',flexShrink:0}}>
+      <div style={{width:260,display:'flex',flexDirection:'column',gap:8,overflowY:'auto',flexShrink:0}}>
 
-        <h3 style={{fontSize:11,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:0}}>
+        <h3 style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:0}}>
           ⭐ Favoris ({FAVORIS_EXEMPLES.length})
         </h3>
 
@@ -277,32 +478,32 @@ export default function PageSource({ project }) {
           return (
             <div
               key={f.id}
-              style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:10,padding:'10px 12px',borderLeft:`3px solid ${t.couleur}`}}
+              style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:8,padding:'8px 10px',borderLeft:`3px solid ${t.couleur}`}}
             >
-              <p style={{fontSize:12,fontWeight:700,color:'#EDE8DB',margin:'0 0 4px',lineHeight:1.4}}>{f.titre}</p>
-              <p style={{fontSize:10,color:'rgba(237,232,219,0.4)',margin:0}}>● {f.journal} · {f.date}</p>
+              <p style={{fontSize:11,fontWeight:700,color:'#EDE8DB',margin:'0 0 3px',lineHeight:1.4}}>{f.titre}</p>
+              <p style={{fontSize:9,color:'rgba(237,232,219,0.4)',margin:0}}>● {f.journal} · {f.date}</p>
             </div>
           )
         })}
 
-        <div style={{height:1,background:'rgba(255,255,255,0.06)',margin:'8px 0'}}/>
+        <div style={{height:1,background:'rgba(255,255,255,0.06)',margin:'6px 0'}}/>
 
-        <p style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.3)',textTransform:'uppercase',letterSpacing:'0.08em',margin:'0 0 4px'}}>Actions</p>
+        <p style={{fontSize:9,fontWeight:700,color:'rgba(237,232,219,0.3)',textTransform:'uppercase',letterSpacing:'0.08em',margin:'0 0 4px'}}>Actions</p>
 
-        <button disabled style={{padding:'10px 12px',borderRadius:10,border:'none',background:`${project.color}30`,color:`${project.color}`,fontSize:12,fontWeight:700,cursor:'not-allowed',textAlign:'left'}}>
+        <button disabled style={{padding:'9px 11px',borderRadius:8,border:'none',background:`${project.color}30`,color:`${project.color}`,fontSize:11,fontWeight:700,cursor:'not-allowed',textAlign:'left'}}>
           ✨ Générer rapport IA
         </button>
-        <button disabled style={{padding:'10px 12px',borderRadius:10,border:'1px solid rgba(255,255,255,0.1)',background:'rgba(255,255,255,0.03)',color:'rgba(237,232,219,0.4)',fontSize:12,fontWeight:700,cursor:'not-allowed',textAlign:'left'}}>
+        <button disabled style={{padding:'9px 11px',borderRadius:8,border:'1px solid rgba(255,255,255,0.1)',background:'rgba(255,255,255,0.03)',color:'rgba(237,232,219,0.4)',fontSize:11,fontWeight:700,cursor:'not-allowed',textAlign:'left'}}>
           📄 Exporter Markdown
         </button>
-        <button disabled style={{padding:'10px 12px',borderRadius:10,border:'1px solid rgba(255,255,255,0.1)',background:'rgba(255,255,255,0.03)',color:'rgba(237,232,219,0.4)',fontSize:12,fontWeight:700,cursor:'not-allowed',textAlign:'left'}}>
+        <button disabled style={{padding:'9px 11px',borderRadius:8,border:'1px solid rgba(255,255,255,0.1)',background:'rgba(255,255,255,0.03)',color:'rgba(237,232,219,0.4)',fontSize:11,fontWeight:700,cursor:'not-allowed',textAlign:'left'}}>
           📝 Ajouter au script
         </button>
 
-        <div style={{marginTop:'auto',padding:'10px 12px',background:'rgba(212,168,83,0.08)',border:'1px solid rgba(212,168,83,0.2)',borderRadius:10}}>
-          <p style={{fontSize:10,fontWeight:700,color:'#D4A853',margin:'0 0 4px'}}>💡 Squelette UI</p>
-          <p style={{fontSize:10,color:'rgba(237,232,219,0.5)',margin:0,lineHeight:1.5}}>
-            Tous les boutons sont visuels. Prochaine session : branchement Gallica SRU + favoris persistants.
+        <div style={{marginTop:'auto',padding:'9px 11px',background:'rgba(91,199,138,0.08)',border:'1px solid rgba(91,199,138,0.2)',borderRadius:8}}>
+          <p style={{fontSize:10,fontWeight:700,color:'#5BC78A',margin:'0 0 4px'}}>✅ V1 Recherche + R2</p>
+          <p style={{fontSize:9,color:'rgba(237,232,219,0.5)',margin:0,lineHeight:1.5}}>
+            Gallica SRU et stockage R2 actifs. Prochaine étape : favoris persistants + Wikipedia, OpenAlex.
           </p>
         </div>
       </div>
