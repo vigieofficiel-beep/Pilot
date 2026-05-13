@@ -4,8 +4,60 @@ import useApiKey from '../hooks/useApiKey'
 // ── CONFIG ───────────────────────────────────────────────────────
 const AGENTS_API_URL = 'https://agents.vigie-officiel.com'
 const FAVORIS_STORAGE_KEY = 'pilot_source_favoris'
+const RESULTS_PER_PAGE = 50
 
-// ── TENDANCES POLITIQUES JOURNAUX ────────────────────────────────
+// ── SOURCES ─────────────────────────────────────────────────────
+const SOURCES = [
+  {
+    id: 'gallica',
+    label: 'Gallica BnF',
+    icon: '📰',
+    description: 'Archives presse + livres français',
+    placeholder: 'soucoupes volantes, Dreyfus, 1968…',
+    supportsDates: true,
+    supportsTypeDoc: true,
+    typeDocOptions: [
+      { value: '', label: 'Tous' },
+      { value: 'fascicule', label: 'Presse / fascicules' },
+      { value: 'monographie', label: 'Livres / monographies' },
+      { value: 'image', label: 'Images' },
+      { value: 'manuscrit', label: 'Manuscrits' },
+    ],
+    supportsTendance: true,
+    color: '#5BA3C7',
+  },
+  {
+    id: 'wikipedia',
+    label: 'Wikipedia',
+    icon: '📚',
+    description: 'Encyclopédie universelle',
+    placeholder: 'Phénomènes paranormaux, histoire, science…',
+    supportsDates: false,
+    supportsTypeDoc: false,
+    supportsTendance: false,
+    supportsLang: true,
+    color: '#9CA3AF',
+  },
+  {
+    id: 'openalex',
+    label: 'OpenAlex',
+    icon: '🔬',
+    description: '250M publications scientifiques',
+    placeholder: 'quantum mechanics, climate change, UAP…',
+    supportsDates: true,
+    supportsTypeDoc: true,
+    typeDocOptions: [
+      { value: '', label: 'Tous' },
+      { value: 'article', label: 'Articles' },
+      { value: 'book', label: 'Livres' },
+      { value: 'preprint', label: 'Preprints' },
+      { value: 'review', label: 'Reviews' },
+    ],
+    supportsTendance: false,
+    color: '#5BC78A',
+  },
+]
+
 const TENDANCES = {
   "L'Humanité":         { couleur:'#C75B4E', label:'Communiste / ouvrier' },
   'Le Populaire':       { couleur:'#EA4B71', label:'Socialiste' },
@@ -16,8 +68,13 @@ const TENDANCES = {
   'Je Suis Partout':    { couleur:'#6B3410', label:'Extrême droite' },
 }
 
-const SOURCES_HARDCODEES = [
-  { id:'gallica', label:'Gallica (BnF)', type:'sru', actif:true, url:'https://gallica.bnf.fr/SRU' },
+const LANGUES_WIKI = [
+  { value: 'fr', label: 'Français' },
+  { value: 'en', label: 'English' },
+  { value: 'es', label: 'Español' },
+  { value: 'de', label: 'Deutsch' },
+  { value: 'it', label: 'Italiano' },
+  { value: 'pt', label: 'Português' },
 ]
 
 // ── HELPERS FAVORIS ──────────────────────────────────────────────
@@ -45,35 +102,41 @@ function sauverFavoris(favoris) {
 
 // ── COMPOSANT PRINCIPAL ───────────────────────────────────────────
 export default function PageSource({ project }) {
-  // Récupère la clé dop_ depuis le Coffre-fort
   const apiKey = useApiKey('agents doppler')
+
+  // Source active
+  const [sourceActive, setSourceActive] = useState('gallica')
+  const sourceConfig = SOURCES.find(s => s.id === sourceActive)
 
   // Recherche
   const [query,          setQuery]          = useState('')
   const [dateDebut,      setDateDebut]      = useState('1900')
   const [dateFin,        setDateFin]        = useState('1960')
-  const [journal,        setJournal]        = useState('Tous')
-  const [source,         setSource]         = useState('gallica')
+  const [lang,           setLang]           = useState('fr')
   const [tendances,      setTendances]      = useState([])
   const [typeDoc,        setTypeDoc]        = useState('')
   const [filtresOuverts, setFiltresOuverts] = useState(false)
   const [sourcesModal,   setSourcesModal]   = useState(false)
 
-  // Résultats Gallica
-  const [results,    setResults]    = useState([])
-  const [totalHits,  setTotalHits]  = useState(0)
-  const [loading,    setLoading]    = useState(false)
-  const [error,      setError]      = useState(null)
-  const [searched,   setSearched]   = useState(false)
+  // Résultats
+  const [results,       setResults]       = useState([])
+  const [totalHits,     setTotalHits]     = useState(0)
+  const [loading,       setLoading]       = useState(false)
+  const [loadingMore,   setLoadingMore]   = useState(false) // NEW : chargement page suivante
+  const [error,         setError]         = useState(null)
+  const [searched,      setSearched]      = useState(false)
+  const [currentPage,   setCurrentPage]   = useState(1) // NEW : page actuelle
 
-  // Téléchargement R2 (par doc)
+  // Mémorise les paramètres de la recherche en cours pour pagination cohérente
+  const [lastSearchParams, setLastSearchParams] = useState(null)
+
+  // Téléchargement R2
   const [theme,           setTheme]           = useState('')
   const [downloadStatus,  setDownloadStatus]  = useState({})
 
-  // ═══════════════ FAVORIS PERSISTANTS ═══════════════
+  // Favoris persistants
   const [favoris, setFavoris] = useState(() => chargerFavoris())
 
-  // Refresh quand un autre onglet/composant modifie le localStorage
   useEffect(() => {
     const handleStorageChange = (e) => {
       if (e.key === FAVORIS_STORAGE_KEY) {
@@ -84,20 +147,14 @@ export default function PageSource({ project }) {
     return () => window.removeEventListener('storage', handleStorageChange)
   }, [])
 
-  // Favoris du projet actif uniquement
   const favorisProjet = favoris.filter(f => f.projet_id === (project?.id || 'general'))
-
-  // Check si un résultat est en favoris
   const estFavori = (resultId) => favoris.some(f => f.id === resultId)
 
-  // Toggle favori
   const toggleFavori = (result) => {
     let newFavoris
     if (estFavori(result.id)) {
-      // Retirer
       newFavoris = favoris.filter(f => f.id !== result.id)
     } else {
-      // Ajouter
       const fav = {
         id: result.id,
         titre: result.titre,
@@ -107,9 +164,12 @@ export default function PageSource({ project }) {
         type_doc: result.type_doc || null,
         url_gallica: result.url_gallica,
         thumbnail: result.thumbnail || null,
-        source: result.source || 'gallica',
+        source: result.source || sourceActive,
         ocr_quality: result.ocr_quality ?? null,
         snippet: result.snippet || null,
+        doi: result.doi || null,
+        pdf_url: result.pdf_url || null,
+        open_access: result.open_access ?? null,
         projet_id: project?.id || 'general',
         theme: theme.trim() || null,
         ajoute_le: new Date().toISOString(),
@@ -120,7 +180,6 @@ export default function PageSource({ project }) {
     sauverFavoris(newFavoris)
   }
 
-  // Supprimer un favori (depuis sidebar)
   const supprimerFavori = (id) => {
     const newFavoris = favoris.filter(f => f.id !== id)
     setFavoris(newFavoris)
@@ -129,7 +188,38 @@ export default function PageSource({ project }) {
 
   const tendancePour = (j) => TENDANCES[j] || { couleur:'#6B7280', label:'Inconnu' }
 
-  // ── RECHERCHE GALLICA ──────────────────────────────────────────
+  const handleChangeSource = (newSource) => {
+    setSourceActive(newSource)
+    setResults([])
+    setTotalHits(0)
+    setSearched(false)
+    setError(null)
+    setCurrentPage(1)
+    setLastSearchParams(null)
+  }
+
+  // ── BUILD PARAMS DE RECHERCHE ──────────────────────────────────
+  const buildSearchBody = (page = 1) => {
+    const body = {
+      query: query.trim(),
+      source: sourceActive,
+      max_results: RESULTS_PER_PAGE,
+      start_record: (page - 1) * RESULTS_PER_PAGE + 1, // pour Gallica
+    }
+    if (sourceConfig.supportsDates) {
+      if (dateDebut) body.date_debut = dateDebut
+      if (dateFin)   body.date_fin   = dateFin
+    }
+    if (sourceConfig.supportsTypeDoc && typeDoc) {
+      body.type_doc = typeDoc
+    }
+    if (sourceConfig.supportsLang) {
+      body.lang = lang
+    }
+    return body
+  }
+
+  // ── RECHERCHE INITIALE (page 1) ───────────────────────────────
   const handleSearch = async () => {
     if (!query.trim()) {
       setError('Saisis un terme de recherche')
@@ -145,23 +235,15 @@ export default function PageSource({ project }) {
     setSearched(true)
     setResults([])
     setTotalHits(0)
+    setCurrentPage(1)
+
+    const body = buildSearchBody(1)
+    setLastSearchParams(body)
 
     try {
-      const body = {
-        query: query.trim(),
-        source: source,
-        max_results: 20,
-      }
-      if (dateDebut) body.date_debut = dateDebut
-      if (dateFin)   body.date_fin   = dateFin
-      if (typeDoc)   body.type_doc   = typeDoc
-
       const response = await fetch(`${AGENTS_API_URL}/sources/recherche`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiKey,
-        },
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
         body: JSON.stringify(body),
       })
 
@@ -175,9 +257,51 @@ export default function PageSource({ project }) {
       setTotalHits(data.total || 0)
     } catch (err) {
       console.error('[Source] Erreur recherche:', err)
-      setError(err.message || 'Erreur recherche Gallica')
+      setError(err.message || 'Erreur recherche')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // ── CHARGER PLUS (page suivante) ──────────────────────────────
+  const handleLoadMore = async () => {
+    if (!lastSearchParams || loadingMore) return
+
+    const nextPage = currentPage + 1
+    setLoadingMore(true)
+    setError(null)
+
+    const body = {
+      ...lastSearchParams,
+      start_record: (nextPage - 1) * RESULTS_PER_PAGE + 1,
+    }
+
+    try {
+      const response = await fetch(`${AGENTS_API_URL}/sources/recherche`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+        body: JSON.stringify(body),
+      })
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}))
+        throw new Error(errData.detail || `Erreur ${response.status}`)
+      }
+
+      const data = await response.json()
+      const newResults = data.results || []
+
+      // Dédupliquer (au cas où le backend retourne des doublons)
+      const existingIds = new Set(results.map(r => r.id))
+      const uniqueNew = newResults.filter(r => !existingIds.has(r.id))
+
+      setResults(prev => [...prev, ...uniqueNew])
+      setCurrentPage(nextPage)
+    } catch (err) {
+      console.error('[Source] Erreur chargement page suivante:', err)
+      setError(`Erreur chargement page ${nextPage} : ${err.message}`)
+    } finally {
+      setLoadingMore(false)
     }
   }
 
@@ -192,8 +316,8 @@ export default function PageSource({ project }) {
       return
     }
 
-    const gallicaId = result.id
-    setDownloadStatus(prev => ({ ...prev, [gallicaId]: 'loading' }))
+    const docId = result.id
+    setDownloadStatus(prev => ({ ...prev, [docId]: 'loading' }))
     setError(null)
 
     try {
@@ -204,15 +328,13 @@ export default function PageSource({ project }) {
         theme: theme.trim().toLowerCase(),
         auteur: result.auteur || '',
         date: result.date || '',
+        source: result.source || sourceActive,
         type_telechargement: 'both',
       }
 
       const response = await fetch(`${AGENTS_API_URL}/sources/telecharger`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiKey,
-        },
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
         body: JSON.stringify(body),
       })
 
@@ -223,15 +345,14 @@ export default function PageSource({ project }) {
 
       const data = await response.json()
       console.log('[Source] Telechargement OK:', data)
-      setDownloadStatus(prev => ({ ...prev, [gallicaId]: 'ok' }))
+      setDownloadStatus(prev => ({ ...prev, [docId]: 'ok' }))
     } catch (err) {
       console.error('[Source] Erreur telechargement:', err)
-      setDownloadStatus(prev => ({ ...prev, [gallicaId]: 'error' }))
+      setDownloadStatus(prev => ({ ...prev, [docId]: 'error' }))
       setError(`Téléchargement échoué : ${err.message}`)
     }
   }
 
-  // ── HELPERS UI ─────────────────────────────────────────────────
   const getDownloadButtonLabel = (id) => {
     const status = downloadStatus[id]
     if (status === 'loading') return '⏳ En cours...'
@@ -243,18 +364,17 @@ export default function PageSource({ project }) {
   const getDownloadButtonStyle = (id) => {
     const status = downloadStatus[id]
     const base = {
-      padding: '5px 10px',
-      borderRadius: 7,
-      fontSize: 10,
-      fontWeight: 700,
-      cursor: status === 'loading' ? 'wait' : 'pointer',
-      border: '1px solid',
+      padding: '5px 10px', borderRadius: 7, fontSize: 10, fontWeight: 700,
+      cursor: status === 'loading' ? 'wait' : 'pointer', border: '1px solid',
     }
     if (status === 'ok')      return { ...base, borderColor: '#5BC78A', background: 'rgba(91,199,138,0.1)', color: '#5BC78A' }
     if (status === 'error')   return { ...base, borderColor: '#C75B4E', background: 'rgba(199,91,78,0.1)', color: '#C75B4E' }
     if (status === 'loading') return { ...base, borderColor: 'rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.05)', color: 'rgba(237,232,219,0.5)' }
     return { ...base, borderColor: `${project.color}40`, background: `${project.color}10`, color: project.color }
   }
+
+  // Indicateur pour savoir s'il reste des résultats à charger
+  const hasMore = results.length < totalHits
 
   return (
     <div style={{display:'flex',gap:20,height:'100%',overflow:'hidden'}}>
@@ -272,36 +392,33 @@ export default function PageSource({ project }) {
             </div>
 
             <p style={{fontSize:12,color:'rgba(237,232,219,0.5)',marginBottom:14,lineHeight:1.6}}>
-              Sources préconfigurées par Pilot + ajout manuel de tes propres sources (URL + clé API + nom).
+              {SOURCES.length} sources préconfigurées par Pilot. Tu pourras bientôt ajouter tes propres sources.
             </p>
 
-            <p style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:'0 0 8px'}}>Préconfigurées</p>
+            <p style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:'0 0 8px'}}>Sources actives</p>
 
-            {SOURCES_HARDCODEES.map(s => (
+            {SOURCES.map(s => (
               <div key={s.id} style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:10,padding:'12px 14px',marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <div>
+                <div style={{flex:1}}>
                   <p style={{fontSize:13,fontWeight:700,color:'#EDE8DB',margin:'0 0 2px'}}>
-                    {s.label}
-                    <span style={{fontSize:10,color:project.color,marginLeft:6,fontWeight:400}}>● Préconfiguré</span>
+                    {s.icon} {s.label}
                   </p>
-                  <p style={{fontSize:11,color:'rgba(237,232,219,0.4)',margin:0}}>{s.url}</p>
+                  <p style={{fontSize:11,color:'rgba(237,232,219,0.4)',margin:0}}>{s.description}</p>
                 </div>
-                <span style={{fontSize:10,color:'#5BC78A',fontWeight:700}}>{s.actif?'Actif':'Inactif'}</span>
+                <span style={{fontSize:10,color:'#5BC78A',fontWeight:700,whiteSpace:'nowrap',marginLeft:12}}>✅ Actif</span>
               </div>
             ))}
 
-            <p style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:'18px 0 8px'}}>Mes sources custom</p>
+            <p style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:'18px 0 8px'}}>À venir</p>
 
-            <div style={{background:'rgba(255,255,255,0.02)',border:'1px dashed rgba(255,255,255,0.1)',borderRadius:10,padding:'20px 14px',textAlign:'center',marginBottom:10}}>
-              <p style={{fontSize:12,color:'rgba(237,232,219,0.4)',margin:'0 0 4px'}}>Aucune source custom pour l'instant.</p>
-              <p style={{fontSize:10,color:'rgba(237,232,219,0.3)',margin:0,lineHeight:1.5}}>
-                Tu pourras ajouter d'autres archives accessibles via API (RetroNews, Europeana, archives municipales, etc.).
+            <div style={{background:'rgba(255,255,255,0.02)',border:'1px dashed rgba(255,255,255,0.1)',borderRadius:10,padding:'16px 14px',marginBottom:10}}>
+              <p style={{fontSize:11,color:'rgba(237,232,219,0.5)',margin:'0 0 6px',lineHeight:1.5}}>
+                Wikisource, Internet Archive, Europe PMC, INSEE, Légifrance, GEIPAN, et 15+ autres sources gratuites.
+              </p>
+              <p style={{fontSize:10,color:'rgba(237,232,219,0.3)',margin:0,fontStyle:'italic'}}>
+                Sources custom utilisateur (URL + clé API) également prévues.
               </p>
             </div>
-
-            <button disabled style={{width:'100%',padding:'11px',borderRadius:10,border:`1px dashed ${project.color}40`,background:'transparent',color:`${project.color}80`,fontSize:13,fontWeight:700,cursor:'not-allowed'}}>
-              + Ajouter une source custom (bientôt)
-            </button>
           </div>
         </div>
       )}
@@ -312,7 +429,7 @@ export default function PageSource({ project }) {
         {/* HEADER COMPACT */}
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0,gap:14}}>
           <p style={{fontSize:11,color:'rgba(237,232,219,0.5)',margin:0,flex:1}}>
-            Archives presse française · Gallica BnF + Cloudflare R2
+            {sourceConfig.description} · Cloudflare R2
             {!apiKey && <span style={{color:'#C75B4E',marginLeft:8,fontWeight:700}}>⚠️ Clé Doppler manquante</span>}
           </p>
           <button
@@ -323,6 +440,30 @@ export default function PageSource({ project }) {
           </button>
         </div>
 
+        {/* SEGMENTED CONTROL SOURCES */}
+        <div style={{display:'flex',gap:0,background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:10,padding:3,flexShrink:0}}>
+          {SOURCES.map(s => {
+            const isActive = sourceActive === s.id
+            return (
+              <button
+                key={s.id}
+                onClick={()=>handleChangeSource(s.id)}
+                style={{
+                  flex:1, padding:'9px 12px', borderRadius:8, border:'none',
+                  background:isActive?s.color:'transparent',
+                  color:isActive?'#0D1B2A':'rgba(237,232,219,0.6)',
+                  fontSize:12, fontWeight:800, cursor:'pointer',
+                  transition:'all 0.15s ease',
+                  display:'flex', alignItems:'center', justifyContent:'center', gap:6,
+                }}
+              >
+                <span style={{fontSize:14}}>{s.icon}</span>
+                <span>{s.label}</span>
+              </button>
+            )
+          })}
+        </div>
+
         {/* BARRE DE RECHERCHE */}
         <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:12,padding:'12px 14px',flexShrink:0}}>
 
@@ -331,7 +472,7 @@ export default function PageSource({ project }) {
               value={query}
               onChange={e=>setQuery(e.target.value)}
               onKeyDown={e=>{if(e.key==='Enter')handleSearch()}}
-              placeholder="Rechercher un sujet, un nom, un événement…"
+              placeholder={sourceConfig.placeholder}
               style={{flex:1,padding:'10px 14px',borderRadius:10,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:13,outline:'none',fontFamily:"'Nunito Sans',sans-serif"}}
             />
             <button
@@ -361,46 +502,59 @@ export default function PageSource({ project }) {
 
           {filtresOuverts && (
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginTop:12,paddingTop:12,borderTop:'1px solid rgba(255,255,255,0.05)'}}>
-              <div>
-                <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Période</label>
-                <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                  <input type="number" value={dateDebut} onChange={e=>setDateDebut(e.target.value)} min="1800" max="2025"
-                    style={{flex:1,padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}/>
-                  <span style={{fontSize:10,color:'rgba(237,232,219,0.3)'}}>→</span>
-                  <input type="number" value={dateFin} onChange={e=>setDateFin(e.target.value)} min="1800" max="2025"
-                    style={{flex:1,padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}/>
+
+              {sourceConfig.supportsDates && (
+                <div>
+                  <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Période</label>
+                  <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                    <input type="number" value={dateDebut} onChange={e=>setDateDebut(e.target.value)} min="1800" max="2025"
+                      style={{flex:1,padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}/>
+                    <span style={{fontSize:10,color:'rgba(237,232,219,0.3)'}}>→</span>
+                    <input type="number" value={dateFin} onChange={e=>setDateFin(e.target.value)} min="1800" max="2025"
+                      style={{flex:1,padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}/>
+                  </div>
                 </div>
-              </div>
+              )}
 
-              <div>
-                <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Type de document</label>
-                <select value={typeDoc} onChange={e=>setTypeDoc(e.target.value)}
-                  style={{width:'100%',padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}>
-                  <option value="">Tous</option>
-                  <option value="fascicule">Presse / fascicules</option>
-                  <option value="monographie">Livres / monographies</option>
-                  <option value="image">Images</option>
-                  <option value="manuscrit">Manuscrits</option>
-                </select>
-              </div>
-
-              <div>
-                <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Source</label>
-                <select value={source} onChange={e=>setSource(e.target.value)}
-                  style={{width:'100%',padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}>
-                  {SOURCES_HARDCODEES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
-                </select>
-              </div>
-
-              <div>
-                <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Tendance politique</label>
-                <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                  {['Gauche','Centre','Droite'].map(t => (
-                    <button key={t} onClick={()=>setTendances(prev=>prev.includes(t)?prev.filter(x=>x!==t):[...prev,t])}
-                      style={{padding:'4px 9px',borderRadius:12,border:`1px solid ${tendances.includes(t)?project.color:'rgba(255,255,255,0.1)'}`,background:tendances.includes(t)?`${project.color}20`:'transparent',color:tendances.includes(t)?project.color:'rgba(237,232,219,0.5)',fontSize:10,fontWeight:700,cursor:'pointer'}}>{t}</button>
-                  ))}
+              {sourceConfig.supportsTypeDoc && (
+                <div>
+                  <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Type de document</label>
+                  <select value={typeDoc} onChange={e=>setTypeDoc(e.target.value)}
+                    style={{width:'100%',padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}>
+                    {sourceConfig.typeDocOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                  </select>
                 </div>
-              </div>
+              )}
+
+              {sourceConfig.supportsLang && (
+                <div>
+                  <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Langue</label>
+                  <select value={lang} onChange={e=>setLang(e.target.value)}
+                    style={{width:'100%',padding:'6px 8px',borderRadius:6,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:11,outline:'none'}}>
+                    {LANGUES_WIKI.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+                  </select>
+                </div>
+              )}
+
+              {sourceConfig.supportsTendance && (
+                <div>
+                  <label style={{fontSize:9,color:'rgba(237,232,219,0.4)',display:'block',marginBottom:3,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>Tendance politique</label>
+                  <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                    {['Gauche','Centre','Droite'].map(t => (
+                      <button key={t} onClick={()=>setTendances(prev=>prev.includes(t)?prev.filter(x=>x!==t):[...prev,t])}
+                        style={{padding:'4px 9px',borderRadius:12,border:`1px solid ${tendances.includes(t)?project.color:'rgba(255,255,255,0.1)'}`,background:tendances.includes(t)?`${project.color}20`:'transparent',color:tendances.includes(t)?project.color:'rgba(237,232,219,0.5)',fontSize:10,fontWeight:700,cursor:'pointer'}}>{t}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!sourceConfig.supportsDates && !sourceConfig.supportsTypeDoc && !sourceConfig.supportsLang && !sourceConfig.supportsTendance && (
+                <div style={{gridColumn:'1 / -1',padding:'12px',textAlign:'center'}}>
+                  <p style={{fontSize:11,color:'rgba(237,232,219,0.4)',margin:0}}>
+                    Pas de filtres avancés pour cette source.
+                  </p>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -413,43 +567,39 @@ export default function PageSource({ project }) {
           </div>
         )}
 
-        {/* LABEL RESULTATS */}
+        {/* LABEL RESULTATS avec compteur */}
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0,padding:'0 4px'}}>
           <p style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:0}}>
             {searched
-              ? `Résultats (${results.length} affichés sur ${totalHits} trouvés)`
-              : 'Lance une recherche pour explorer Gallica'}
+              ? `${sourceConfig.label} — ${results.length} affichés sur ${totalHits.toLocaleString('fr-FR')} trouvés`
+              : `Lance une recherche dans ${sourceConfig.label}`}
           </p>
           {searched && results.length>0 && (
-            <p style={{fontSize:10,color:'rgba(91,199,138,0.7)',margin:0}}>✅ Pipeline Gallica + R2 actif</p>
+            <p style={{fontSize:10,color:'rgba(91,199,138,0.7)',margin:0}}>
+              {hasMore ? `📄 Page ${currentPage}` : '✅ Tous affichés'}
+            </p>
           )}
         </div>
 
         {/* ═══════════════ ZONE RÉSULTATS ═══════════════ */}
         <div style={{
-          display:'flex',
-          flexDirection:'column',
-          gap:8,
-          overflowY:'auto',
-          paddingRight:6,
-          flex:'1 1 auto',
-          minHeight:0,
-          scrollbarWidth:'thin',
-          scrollbarColor:`${project.color}60 rgba(255,255,255,0.05)`,
+          display:'flex', flexDirection:'column', gap:8, overflowY:'auto', paddingRight:6,
+          flex:'1 1 auto', minHeight:0,
+          scrollbarWidth:'thin', scrollbarColor:`${project.color}60 rgba(255,255,255,0.05)`,
         }}>
 
           {loading && (
             <div style={{padding:40,textAlign:'center',color:'rgba(237,232,219,0.5)'}}>
               <p style={{fontSize:28,margin:'0 0 8px'}}>⏳</p>
-              <p style={{fontSize:13,margin:0}}>Recherche dans Gallica…</p>
+              <p style={{fontSize:13,margin:0}}>Recherche dans {sourceConfig.label}…</p>
             </div>
           )}
 
           {!loading && !searched && (
             <div style={{padding:60,textAlign:'center',color:'rgba(237,232,219,0.3)'}}>
-              <p style={{fontSize:40,margin:'0 0 12px'}}>📚</p>
-              <p style={{fontSize:14,margin:'0 0 6px',fontWeight:700}}>Aucune recherche effectuée</p>
-              <p style={{fontSize:11,margin:0,lineHeight:1.5}}>Saisis un terme dans la barre ci-dessus et clique sur Chercher</p>
+              <p style={{fontSize:40,margin:'0 0 12px'}}>{sourceConfig.icon}</p>
+              <p style={{fontSize:14,margin:'0 0 6px',fontWeight:700}}>Aucune recherche dans {sourceConfig.label}</p>
+              <p style={{fontSize:11,margin:0,lineHeight:1.5}}>{sourceConfig.description}</p>
             </div>
           )}
 
@@ -457,21 +607,30 @@ export default function PageSource({ project }) {
             <div style={{padding:40,textAlign:'center',color:'rgba(237,232,219,0.4)'}}>
               <p style={{fontSize:28,margin:'0 0 8px'}}>🔎</p>
               <p style={{fontSize:13,margin:0}}>Aucun résultat pour "{query}"</p>
-              <p style={{fontSize:11,margin:'4px 0 0',color:'rgba(237,232,219,0.3)'}}>Essaie avec d'autres mots-clés ou élargis la période</p>
+              <p style={{fontSize:11,margin:'4px 0 0',color:'rgba(237,232,219,0.3)'}}>Essaie avec d'autres mots-clés</p>
             </div>
           )}
 
-          {!loading && results.map(r => {
-            const journalDetecte = Object.keys(TENDANCES).find(j =>
-              (r.titre || '').includes(j) || (r.editeur || '').includes(j)
-            )
-            const t = tendancePour(journalDetecte || r.editeur || '')
+          {!loading && results.map((r, idx) => {
+            let borderColor = sourceConfig.color
+            let tendanceLabel = null
+            if (r.source === 'gallica') {
+              const journalDetecte = Object.keys(TENDANCES).find(j =>
+                (r.titre || '').includes(j) || (r.editeur || '').includes(j)
+              )
+              if (journalDetecte) {
+                const t = tendancePour(journalDetecte)
+                borderColor = t.couleur
+                tendanceLabel = t.label
+              }
+            }
+
             const isFav = estFavori(r.id)
 
             return (
               <div
-                key={r.id}
-                style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:10,padding:'12px 14px',borderLeft:`4px solid ${t.couleur}`,display:'flex',gap:12,flexShrink:0}}
+                key={`${r.id}_${idx}`}
+                style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:10,padding:'12px 14px',borderLeft:`4px solid ${borderColor}`,display:'flex',gap:12,flexShrink:0}}
               >
                 {r.thumbnail && (
                   <img
@@ -484,7 +643,10 @@ export default function PageSource({ project }) {
 
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:5,gap:10}}>
-                    <h4 style={{fontSize:13,fontWeight:700,color:'#EDE8DB',margin:0,lineHeight:1.4,flex:1}}>{r.titre}</h4>
+                    <h4 style={{fontSize:13,fontWeight:700,color:'#EDE8DB',margin:0,lineHeight:1.4,flex:1}}>
+                      <span style={{color:'rgba(237,232,219,0.3)',fontSize:10,marginRight:6}}>#{idx+1}</span>
+                      {r.titre}
+                    </h4>
                     <button
                       onClick={()=>toggleFavori(r)}
                       title={isFav?'Retirer des favoris':'Ajouter aux favoris'}
@@ -497,11 +659,32 @@ export default function PageSource({ project }) {
                   <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6,fontSize:10,flexWrap:'wrap'}}>
                     {r.auteur && (<><span style={{color:'rgba(237,232,219,0.7)',fontWeight:700}}>{r.auteur}</span><span style={{color:'rgba(237,232,219,0.3)'}}>·</span></>)}
                     {r.date && (<><span style={{color:'rgba(237,232,219,0.5)'}}>{r.date}</span><span style={{color:'rgba(237,232,219,0.3)'}}>·</span></>)}
-                    {r.editeur && (<><span style={{color:'rgba(237,232,219,0.5)'}}>{r.editeur}</span><span style={{color:'rgba(237,232,219,0.3)'}}>·</span></>)}
+                    {r.editeur && (<><span style={{color:'rgba(237,232,219,0.5)'}}>{r.editeur}</span></>)}
                     {r.type_doc && <span style={{fontSize:9,color:'rgba(237,232,219,0.4)',background:'rgba(255,255,255,0.04)',padding:'1px 6px',borderRadius:5}}>{r.type_doc}</span>}
+
                     {r.ocr_quality != null && (
                       <span style={{fontSize:9,color:r.ocr_quality>80?'#5BC78A':r.ocr_quality>60?'#D4A853':'#C75B4E',background:'rgba(255,255,255,0.04)',padding:'1px 6px',borderRadius:5}}>
                         OCR {Math.round(r.ocr_quality)}%
+                      </span>
+                    )}
+                    {r.open_access === true && (
+                      <span style={{fontSize:9,color:'#5BC78A',background:'rgba(91,199,138,0.1)',padding:'1px 6px',borderRadius:5,fontWeight:700}}>
+                        🔓 Open Access
+                      </span>
+                    )}
+                    {r.open_access === false && (
+                      <span style={{fontSize:9,color:'rgba(237,232,219,0.5)',background:'rgba(255,255,255,0.04)',padding:'1px 6px',borderRadius:5}}>
+                        🔒 Payant
+                      </span>
+                    )}
+                    {r.doi && (
+                      <span style={{fontSize:9,color:'rgba(237,232,219,0.4)',background:'rgba(255,255,255,0.04)',padding:'1px 6px',borderRadius:5,fontFamily:'monospace'}}>
+                        DOI:{r.doi.slice(0,18)}...
+                      </span>
+                    )}
+                    {tendanceLabel && (
+                      <span style={{fontSize:9,color:borderColor,background:'rgba(255,255,255,0.04)',padding:'1px 6px',borderRadius:5}}>
+                        {tendanceLabel}
                       </span>
                     )}
                   </div>
@@ -517,8 +700,18 @@ export default function PageSource({ project }) {
                       rel="noopener noreferrer"
                       style={{padding:'4px 9px',borderRadius:6,border:`1px solid ${project.color}40`,background:`${project.color}10`,color:project.color,fontSize:10,fontWeight:700,cursor:'pointer',textDecoration:'none'}}
                     >
-                      📖 Lire sur Gallica
+                      📖 {r.source === 'gallica' ? 'Lire sur Gallica' : r.source === 'wikipedia' ? 'Lire sur Wikipedia' : 'Ouvrir le papier'}
                     </a>
+                    {r.pdf_url && r.pdf_url !== r.url_gallica && (
+                      <a
+                        href={r.pdf_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{padding:'4px 9px',borderRadius:6,border:'1px solid rgba(91,199,138,0.4)',background:'rgba(91,199,138,0.1)',color:'#5BC78A',fontSize:10,fontWeight:700,cursor:'pointer',textDecoration:'none'}}
+                      >
+                        📄 PDF
+                      </a>
+                    )}
                     <button
                       onClick={()=>handleDownload(r)}
                       disabled={downloadStatus[r.id]==='loading' || downloadStatus[r.id]==='ok'}
@@ -537,6 +730,45 @@ export default function PageSource({ project }) {
               </div>
             )
           })}
+
+          {/* ═══════════ BOUTON CHARGER PLUS ═══════════ */}
+          {!loading && results.length > 0 && hasMore && (
+            <div style={{padding:'12px 0',display:'flex',justifyContent:'center',flexShrink:0}}>
+              <button
+                onClick={handleLoadMore}
+                disabled={loadingMore}
+                style={{
+                  padding:'12px 28px',
+                  borderRadius:10,
+                  border:`1px solid ${sourceConfig.color}60`,
+                  background:loadingMore ? `${sourceConfig.color}20` : `${sourceConfig.color}15`,
+                  color:sourceConfig.color,
+                  fontSize:12,
+                  fontWeight:800,
+                  cursor:loadingMore?'wait':'pointer',
+                  transition:'all 0.2s ease',
+                  display:'flex',
+                  alignItems:'center',
+                  gap:8,
+                }}
+              >
+                {loadingMore ? (
+                  <>⏳ Chargement…</>
+                ) : (
+                  <>↓ Charger 50 résultats de plus ({results.length} / {totalHits.toLocaleString('fr-FR')})</>
+                )}
+              </button>
+            </div>
+          )}
+
+          {/* Indicateur fin des résultats */}
+          {!loading && results.length > 0 && !hasMore && (
+            <div style={{padding:'14px 0',textAlign:'center',flexShrink:0}}>
+              <p style={{fontSize:11,color:'rgba(237,232,219,0.3)',margin:0,fontStyle:'italic'}}>
+                — Fin des résultats ({totalHits.toLocaleString('fr-FR')} affichés) —
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -554,17 +786,10 @@ export default function PageSource({ project }) {
           )}
         </div>
 
-        {/* Liste favoris du projet — scrollable */}
         <div style={{
-          flex:'1 1 auto',
-          minHeight:0,
-          overflowY:'auto',
-          display:'flex',
-          flexDirection:'column',
-          gap:6,
-          paddingRight:4,
-          scrollbarWidth:'thin',
-          scrollbarColor:`${project.color}40 transparent`,
+          flex:'1 1 auto', minHeight:0, overflowY:'auto',
+          display:'flex', flexDirection:'column', gap:6, paddingRight:4,
+          scrollbarWidth:'thin', scrollbarColor:`${project.color}40 transparent`,
         }}>
           {favorisProjet.length === 0 ? (
             <div style={{padding:'20px 12px',textAlign:'center',color:'rgba(237,232,219,0.3)',background:'rgba(255,255,255,0.02)',borderRadius:8,border:'1px dashed rgba(255,255,255,0.08)'}}>
@@ -574,15 +799,19 @@ export default function PageSource({ project }) {
             </div>
           ) : (
             favorisProjet.map(f => {
-              const journalDetecte = Object.keys(TENDANCES).find(j =>
-                (f.titre || '').includes(j) || (f.editeur || '').includes(j)
-              )
-              const t = tendancePour(journalDetecte || f.editeur || '')
+              const sourceConfigFav = SOURCES.find(s => s.id === f.source) || SOURCES[0]
+              let borderColor = sourceConfigFav.color
+              if (f.source === 'gallica') {
+                const journalDetecte = Object.keys(TENDANCES).find(j =>
+                  (f.titre || '').includes(j) || (f.editeur || '').includes(j)
+                )
+                if (journalDetecte) borderColor = tendancePour(journalDetecte).couleur
+              }
 
               return (
                 <div
                   key={f.id}
-                  style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:8,padding:'8px 10px',borderLeft:`3px solid ${t.couleur}`,flexShrink:0,position:'relative'}}
+                  style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:8,padding:'8px 10px',borderLeft:`3px solid ${borderColor}`,flexShrink:0,position:'relative'}}
                 >
                   <button
                     onClick={()=>supprimerFavori(f.id)}
@@ -593,9 +822,9 @@ export default function PageSource({ project }) {
                   </button>
                   <p style={{fontSize:11,fontWeight:700,color:'#EDE8DB',margin:'0 0 3px',lineHeight:1.4,paddingRight:16}}>{f.titre}</p>
                   <p style={{fontSize:9,color:'rgba(237,232,219,0.4)',margin:'0 0 4px'}}>
-                    {f.auteur && <span>{f.auteur}</span>}
-                    {f.auteur && f.date && <span> · </span>}
-                    {f.date && <span>{f.date}</span>}
+                    <span style={{color:sourceConfigFav.color,fontWeight:700}}>{sourceConfigFav.icon} {sourceConfigFav.label}</span>
+                    {f.auteur && <span> · {f.auteur.length > 20 ? f.auteur.slice(0,20)+'…' : f.auteur}</span>}
+                    {f.date && <span> · {f.date}</span>}
                   </p>
                   {f.theme && (
                     <p style={{fontSize:8,color:`${project.color}cc`,margin:'0 0 4px',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.05em'}}>
@@ -608,7 +837,7 @@ export default function PageSource({ project }) {
                     rel="noopener noreferrer"
                     style={{fontSize:9,color:project.color,textDecoration:'none'}}
                   >
-                    📖 Lire sur Gallica →
+                    📖 Ouvrir →
                   </a>
                 </div>
               )
@@ -631,9 +860,9 @@ export default function PageSource({ project }) {
         </button>
 
         <div style={{padding:'9px 11px',background:'rgba(91,199,138,0.08)',border:'1px solid rgba(91,199,138,0.2)',borderRadius:8,flexShrink:0}}>
-          <p style={{fontSize:10,fontWeight:700,color:'#5BC78A',margin:'0 0 4px'}}>✅ V2 Favoris persistants</p>
+          <p style={{fontSize:10,fontWeight:700,color:'#5BC78A',margin:'0 0 4px'}}>✅ V4 Pagination</p>
           <p style={{fontSize:9,color:'rgba(237,232,219,0.5)',margin:0,lineHeight:1.5}}>
-            Favoris stockés en local par projet. Prochain : Wikipedia + OpenAlex.
+            50/chargement + multi-sources actifs. Prochain : Rapport IA Claude.
           </p>
         </div>
       </div>
