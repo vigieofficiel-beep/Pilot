@@ -989,7 +989,164 @@ ipcMain.handle('studia:deleteImage', async (event, fileUrl) => {
     return { success: false, error: err.message }
   }
 })
+// Analyser un transcript YouTube via GPT-4o (BYOK pur, cle ne transite pas par VPS)
+// Params attendus :
+//   { texte, titre?, auteur?, modele? }
+ipcMain.handle('studia:analyzeTranscript', async (event, params) => {
+  const cfg = loadOpenAIConfig()
+  if (!cfg.apiKey) {
+    return { success: false, error: 'Cle API OpenAI non configuree' }
+  }
 
+  const {
+    texte,
+    titre = null,
+    auteur = null,
+    modele = 'gpt-4o'
+  } = params || {}
+
+  if (!texte || typeof texte !== 'string' || texte.length < 50) {
+    return { success: false, error: 'Texte trop court (minimum 50 caracteres)' }
+  }
+
+  // Limite contexte GPT-4o : ~128k tokens. On limite a 120k chars pour rester safe.
+  let texteAnalyse = texte.slice(0, 120000)
+  if (texte.length > 120000) {
+    texteAnalyse += `\n\n[Transcript tronque pour analyse, longueur originale : ${texte.length} chars]`
+  }
+
+  let contexte = ''
+  if (titre)  contexte += `Titre video : ${titre}\n`
+  if (auteur) contexte += `Chaine YouTube : ${auteur}\n`
+  if (contexte) contexte = 'Contexte :\n' + contexte + '\n'
+
+  const systemPrompt = `Tu es un analyste expert de contenus video. Tu vas analyser un transcript YouTube et produire une analyse structuree au format JSON strict.
+
+Tu dois retourner UNIQUEMENT un objet JSON valide (pas de markdown, pas de texte autour) avec cette structure exacte :
+
+{
+  "resume_court": "Resume en 2-3 phrases maximum, factuel et synthetique.",
+  "resume_detaille": "Resume en 1 paragraphe (5-8 phrases) couvrant les points principaux.",
+  "chapitres": [
+    {
+      "titre": "Titre court du chapitre",
+      "debut_approximatif": "12:35 ou null si tu ne peux pas estimer",
+      "description_courte": "1-2 phrases sur ce chapitre"
+    }
+  ],
+  "themes": ["theme1", "theme2", "theme3"],
+  "sentiment": "positif|neutre|negatif|mixte",
+  "sentiment_description": "Explication courte du sentiment general",
+  "citations_marquantes": ["Citation impactante 1", "Citation impactante 2"]
+}
+
+Regles :
+- 3 a 6 chapitres maximum, en francais
+- 5 a 10 themes (mots-cles courts)
+- 3 a 5 citations marquantes maximum, courtes (max 25 mots), reprises QUASI VERBATIM du transcript
+- Sois factuel, ne pas inventer ce qui n'est pas dans le transcript
+- Reponds en FRANCAIS quelle que soit la langue du transcript`
+
+  const userPrompt = `${contexte}Transcript a analyser :\n\n${texteAnalyse}\n\nProduis ton analyse au format JSON strict comme demande dans le system prompt.`
+
+  const body = JSON.stringify({
+    model: modele,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user',   content: userPrompt },
+    ],
+    temperature: 0.3,
+    response_format: { type: 'json_object' },
+    max_tokens: 4000,
+  })
+
+  try {
+    const apiResp = await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.openai.com',
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${cfg.apiKey}`,
+          'Content-Type':  'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+        timeout: 120000,
+      }, (res) => {
+        const chunks = []
+        res.on('data', c => chunks.push(c))
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(Buffer.concat(chunks).toString())
+            if (res.statusCode !== 200) {
+              reject(new Error(data.error?.message || `HTTP ${res.statusCode}`))
+            } else {
+              resolve(data)
+            }
+          } catch (e) {
+            reject(new Error('Reponse JSON invalide'))
+          }
+        })
+      })
+      req.on('error', reject)
+      req.on('timeout', () => { req.destroy(); reject(new Error('Timeout OpenAI (120s)')) })
+      req.write(body)
+      req.end()
+    })
+
+    const rawContent = apiResp.choices?.[0]?.message?.content
+    if (!rawContent) {
+      return { success: false, error: 'Reponse OpenAI vide' }
+    }
+
+    let analyse
+    try {
+      analyse = JSON.parse(rawContent)
+    } catch (e) {
+      return { success: false, error: 'Reponse GPT mal formee (JSON invalide)' }
+    }
+
+    // Calcul cout (gpt-4o : 2.5$ in, 10$ out / 1M tokens)
+    const tokensIn  = apiResp.usage?.prompt_tokens     || 0
+    const tokensOut = apiResp.usage?.completion_tokens || 0
+    const tokensTotal = tokensIn + tokensOut
+    const coutUsd = (tokensIn / 1_000_000) * 2.5 + (tokensOut / 1_000_000) * 10.0
+    const coutEur = Math.round(coutUsd * 0.93 * 10000) / 10000  // 4 decimales
+
+    // Mettre a jour les stats d'usage cumulees (meme compteur que les images)
+    const usage = loadStudiaUsage()
+    usage.totalSpent = (usage.totalSpent || 0) + coutUsd
+    usage.generations = usage.generations || []
+    usage.generations.unshift({
+      type: 'transcript_analysis',
+      cost: coutUsd,
+      tokens: tokensTotal,
+      modele,
+      timestamp: new Date().toISOString(),
+    })
+    if (usage.generations.length > 500) usage.generations = usage.generations.slice(0, 500)
+    saveStudiaUsage(usage)
+
+    return {
+      success: true,
+      resume_court:          analyse.resume_court          || '',
+      resume_detaille:       analyse.resume_detaille       || '',
+      chapitres:             analyse.chapitres             || [],
+      themes:                analyse.themes                || [],
+      sentiment:             analyse.sentiment             || 'neutre',
+      sentiment_description: analyse.sentiment_description || '',
+      citations_marquantes:  analyse.citations_marquantes  || [],
+      nb_tokens_utilises:    tokensTotal,
+      cout_estime_eur:       coutEur,
+      cout_usd:              coutUsd,
+      totalSpent:            usage.totalSpent,
+    }
+
+  } catch (err) {
+    console.error('[studia:analyzeTranscript] erreur:', err)
+    return { success: false, error: err.message || String(err) }
+  }
+})
 // ═══════════════════════════════════════════════════════════════════════════
 // GOOGLE DRIVE OAUTH (Phase 4c) - BYOK pure
 // ═══════════════════════════════════════════════════════════════════════════

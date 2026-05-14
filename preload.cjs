@@ -37,6 +37,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     deleteImage:         (fileUrl)  => ipcRenderer.invoke('studia:deleteImage', fileUrl),
     openImage:           (fileUrl)  => ipcRenderer.invoke('studia:openImage', fileUrl),
     revealImagesFolder:  ()         => ipcRenderer.invoke('studia:revealImagesFolder'),
+
+    // Analyse de transcript YouTube via GPT-4o (BYOK)
+    // params = { texte, titre?, auteur?, modele? }
+    analyzeTranscript:   (params)   => ipcRenderer.invoke('studia:analyzeTranscript', params),
   },
 
   // Google Drive OAuth (BYOK pure - tokens stockes en local Electron)

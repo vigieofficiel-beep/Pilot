@@ -5,10 +5,11 @@ const STUDIA_COLOR = '#7F77DD'
 const AGENTS_API_URL = 'https://agents.vigie-officiel.com'
 
 const TABS = [
-  { id: 'voix',    label: 'Clone IA voix',       emoji: '🎙️', subtitle: 'Cloner ta voix et générer des audios' },
-  { id: 'images',  label: 'Photos & Images IA',  emoji: '🖼️', subtitle: 'Générer des images par lot' },
-  { id: 'cinema',  label: 'Studio Cinéma',       emoji: '🎬', subtitle: 'Vidéos longues 3-12 min, montage auto' },
-  { id: 'shorts',  label: 'Tutos vidéo courts',  emoji: '⚡', subtitle: 'Shorts 30s-2min vertical 9:16' },
+  { id: 'voix',       label: 'Clone IA voix',       emoji: '🎙️', subtitle: 'Cloner ta voix et générer des audios' },
+  { id: 'images',     label: 'Photos & Images IA',  emoji: '🖼️', subtitle: 'Générer des images par lot' },
+  { id: 'cinema',     label: 'Studio Cinéma',       emoji: '🎬', subtitle: 'Vidéos longues 3-12 min, montage auto' },
+  { id: 'shorts',     label: 'Tutos vidéo courts',  emoji: '⚡', subtitle: 'Shorts 30s-2min vertical 9:16' },
+  { id: 'transcript', label: 'YouTube Transcript',  emoji: '📜', subtitle: 'Extraire et analyser des transcripts YouTube' },
 ]
 
 const TON_OPTIONS = [
@@ -389,7 +390,40 @@ async function checkVideoStatus({ requestId, modelId, pollingNamespace }) {
   if (!res.ok) throw new Error(await extractApiError(res))
   return res.json()
 }
+// --- Agent TRANSCRIPT YouTube ---
 
+async function extraireTranscriptYoutube({ url, languesPreferes }) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) throw new Error('Cle Agents Doppler introuvable. Ajoute-la dans le Coffre-fort.')
+  const res = await fetch(`${AGENTS_API_URL}/transcript/extraire`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+    body: JSON.stringify({
+      url,
+      langues_preferees: languesPreferes || ['fr', 'en'],
+    }),
+  })
+  if (!res.ok) throw new Error(await extractApiError(res))
+  return res.json()
+}
+
+async function analyserTranscript({ texte, titre, auteur, openaiApiKey, modele }) {
+  const apiKey = getAgentsApiKey()
+  if (!apiKey) throw new Error('Cle Agents Doppler introuvable.')
+  const res = await fetch(`${AGENTS_API_URL}/transcript/analyser`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+    body: JSON.stringify({
+      texte,
+      titre: titre || null,
+      auteur: auteur || null,
+      openai_api_key: openaiApiKey,
+      modele: modele || 'gpt-4o',
+    }),
+  })
+  if (!res.ok) throw new Error(await extractApiError(res))
+  return res.json()
+}
 function base64ToAudioBlobUrl(base64) {
   const byteChars = atob(base64)
   const byteNumbers = new Array(byteChars.length)
@@ -2634,6 +2668,437 @@ function TabShorts({ project }) {
     </div>
   )
 }
+// ── ONGLET 5 : YOUTUBE TRANSCRIPT ─────────────────────────────────
+function TabTranscript({ project }) {
+  const storageKey = `pilotage_studia_transcripts_${project.id}`
+
+  // Etat
+  const [history, setHistory] = useState(() => { try { return JSON.parse(localStorage.getItem(storageKey)) || [] } catch { return [] } })
+  const [url, setUrl] = useState('')
+  const [extracting, setExtracting] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [currentTranscript, setCurrentTranscript] = useState(null)
+  const [currentAnalyse, setCurrentAnalyse] = useState(null)
+  const [activeView, setActiveView] = useState('texte')
+  const [errorMsg, setErrorMsg] = useState(null)
+  const [successMsg, setSuccessMsg] = useState(null)
+  const [showSegments, setShowSegments] = useState(false)
+
+  const [hasOpenAIKey, setHasOpenAIKey] = useState(false)
+  const [keyChecked, setKeyChecked] = useState(false)
+  const [showKeyModal, setShowKeyModal] = useState(false)
+
+  const showError = (msg, dur = 8000) => { setErrorMsg(msg); setTimeout(() => setErrorMsg(null), dur) }
+  const showSuccess = (msg, dur = 4000) => { setSuccessMsg(msg); setTimeout(() => setSuccessMsg(null), dur) }
+
+  const refreshKey = async () => {
+    try {
+      const has = await window.electronAPI.studia.hasOpenAIKey()
+      setHasOpenAIKey(has)
+    } catch (err) {
+      console.error('refreshKey:', err)
+    }
+    setKeyChecked(true)
+  }
+
+  useEffect(() => {
+    refreshKey()
+    try { setHistory(JSON.parse(localStorage.getItem(storageKey)) || []) } catch { setHistory([]) }
+    setCurrentTranscript(null); setCurrentAnalyse(null)
+  }, [project.id])
+
+  const persist = (arr) => { localStorage.setItem(storageKey, JSON.stringify(arr)); setHistory(arr) }
+
+  const extraire = async () => {
+    if (!url.trim() || extracting) return
+    setExtracting(true)
+    setErrorMsg(null)
+    setCurrentAnalyse(null)
+    try {
+      const result = await extraireTranscriptYoutube({
+        url: url.trim(),
+        languesPreferes: ['fr', 'en'],
+      })
+      const entry = {
+        id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+        url: url.trim(),
+        videoId: result.video_id,
+        langue: result.langue,
+        estAutoGeneree: result.est_auto_generee,
+        dureeSec: result.duree_totale,
+        nbSegments: result.nb_segments,
+        texteComplet: result.texte_complet,
+        segments: result.segments,
+        analyse: null,
+        createdAt: new Date().toISOString(),
+      }
+      setCurrentTranscript(entry)
+      persist([entry, ...history].slice(0, 30))
+      showSuccess(`📜 Transcript extrait : ${result.nb_segments} segments, ${fmtTime(result.duree_totale)}`)
+    } catch (err) {
+      showError(`❌ ${err.message}`)
+    }
+    setExtracting(false)
+  }
+
+ const analyser = async () => {
+    if (!currentTranscript || analyzing) return
+    if (!hasOpenAIKey) {
+      setShowKeyModal(true)
+      return
+    }
+    setAnalyzing(true)
+    setErrorMsg(null)
+    try {
+      const result = await window.electronAPI.studia.analyzeTranscript({
+        texte: currentTranscript.texteComplet,
+        titre: null,
+        auteur: null,
+        modele: 'gpt-4o',
+      })
+      if (!result.success) {
+        showError(`❌ ${result.error || 'Erreur inconnue'}`)
+        setAnalyzing(false)
+        return
+      }
+      setCurrentAnalyse(result)
+      setActiveView('analyse')
+      const updated = history.map(h => h.id === currentTranscript.id ? { ...h, analyse: result } : h)
+      persist(updated)
+      setCurrentTranscript({ ...currentTranscript, analyse: result })
+      showSuccess(`✨ Analyse complete - cout ${result.cout_estime_eur.toFixed(4)}€`)
+    } catch (err) {
+      showError(`❌ Analyse echouee : ${err.message}`)
+    }
+    setAnalyzing(false)
+  }
+
+  const supprimer = (id) => {
+    if (!confirm('Supprimer ce transcript ?')) return
+    persist(history.filter(h => h.id !== id))
+    if (currentTranscript?.id === id) {
+      setCurrentTranscript(null)
+      setCurrentAnalyse(null)
+    }
+  }
+
+  const charger = (entry) => {
+    setCurrentTranscript(entry)
+    setCurrentAnalyse(entry.analyse || null)
+    setActiveView(entry.analyse ? 'analyse' : 'texte')
+  }
+
+  const copierTexte = () => {
+    if (!currentTranscript) return
+    navigator.clipboard.writeText(currentTranscript.texteComplet)
+    showSuccess('📋 Texte copie dans le presse-papier')
+  }
+
+  const exporter = () => {
+    if (!currentTranscript) return
+    const lines = [
+      `# Transcript YouTube`,
+      `URL : https://www.youtube.com/watch?v=${currentTranscript.videoId}`,
+      `Langue : ${currentTranscript.langue} ${currentTranscript.estAutoGeneree ? '(auto-genere)' : '(manuel)'}`,
+      `Duree : ${fmtTime(currentTranscript.dureeSec)}`,
+      `Segments : ${currentTranscript.nbSegments}`,
+      ``,
+      `## Texte complet`,
+      ``,
+      currentTranscript.texteComplet,
+    ]
+    if (currentAnalyse) {
+      lines.push('', '## Analyse IA', '', '### Resume court', currentAnalyse.resume_court)
+      lines.push('', '### Resume detaille', currentAnalyse.resume_detaille)
+      lines.push('', '### Chapitres')
+      currentAnalyse.chapitres.forEach((c, i) => {
+        lines.push(`${i + 1}. **${c.titre}**${c.debut_approximatif ? ` (${c.debut_approximatif})` : ''} - ${c.description_courte}`)
+      })
+      lines.push('', '### Themes', currentAnalyse.themes.map(t => `- ${t}`).join('\n'))
+      lines.push('', '### Sentiment', `${currentAnalyse.sentiment} - ${currentAnalyse.sentiment_description}`)
+      lines.push('', '### Citations marquantes')
+      currentAnalyse.citations_marquantes.forEach(c => lines.push(`> ${c}`))
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown' })
+    const dataUrl = URL.createObjectURL(blob)
+    downloadDataUrl(dataUrl, `transcript-${currentTranscript.videoId}-${currentTranscript.id}.md`)
+    setTimeout(() => URL.revokeObjectURL(dataUrl), 1000)
+  }
+
+  const envoyerVers = (cible) => {
+    if (!currentTranscript) return
+    const payload = {
+      type: 'transcript_youtube',
+      videoId: currentTranscript.videoId,
+      url: currentTranscript.url,
+      texteComplet: currentTranscript.texteComplet,
+      langue: currentTranscript.langue,
+      dureeSec: currentTranscript.dureeSec,
+      analyse: currentAnalyse,
+      origin: 'studia_transcript',
+      timestamp: new Date().toISOString(),
+    }
+    if (cible === 'contenu') {
+      localStorage.setItem('pilot_transfer_to_contenu', JSON.stringify(payload))
+      showSuccess('📨 Transcript pousse vers le module Contenu. Ouvre Contenu pour le voir.')
+    } else if (cible === 'cinema') {
+      localStorage.setItem('pilot_transfer_to_cinema', JSON.stringify(payload))
+      showSuccess('🎬 Transcript pousse vers Studio Cinema (script).')
+    } else if (cible === 'source') {
+      localStorage.setItem('pilot_transfer_to_source', JSON.stringify(payload))
+      showSuccess('📚 Transcript pousse vers le module Source (archive).')
+    }
+  }
+
+  if (!keyChecked) {
+    return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, color: 'rgba(237,232,219,0.4)' }}>⏳ Chargement...</div>
+  }
+
+  return (
+    <>
+      {showKeyModal && (
+        <OpenAIKeyModal
+          onClose={() => setShowKeyModal(false)}
+          onSaved={() => { setShowKeyModal(false); refreshKey(); showSuccess('🔑 Cle API enregistree') }}
+        />
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+        {errorMsg && <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', fontSize: 12, color: '#C75B4E' }}>{errorMsg}</div>}
+        {successMsg && <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(91,199,138,0.1)', border: '1px solid rgba(91,199,138,0.3)', fontSize: 12, color: '#5BC78A' }}>{successMsg}</div>}
+
+        <div style={{ background: 'rgba(127,119,221,0.08)', border: '1px solid rgba(127,119,221,0.25)', borderRadius: 10, padding: '12px 16px', fontSize: 12, color: 'rgba(237,232,219,0.8)', lineHeight: 1.6 }}>
+          📜 <strong>YouTube Transcript</strong> — Colle une URL YouTube pour extraire le transcript. Analyse IA premium via GPT-4o (resume + chapitres + themes + sentiment + citations). Stockage local uniquement.
+        </div>
+
+        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
+          <h3 style={{ fontSize: 13, fontWeight: 700, color: '#EDE8DB', marginBottom: 12 }}>🔗 Extraire un transcript</h3>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <input
+              value={url}
+              onChange={e => setUrl(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && url.trim()) extraire() }}
+              placeholder="https://www.youtube.com/watch?v=..."
+              style={iS}
+              disabled={extracting}
+            />
+            <button
+              onClick={extraire}
+              disabled={!url.trim() || extracting}
+              style={{
+                padding: '10px 20px', borderRadius: 10, border: 'none',
+                background: (!url.trim() || extracting) ? `${STUDIA_COLOR}40` : STUDIA_COLOR,
+                color: '#0D1B2A', fontSize: 12, fontWeight: 800,
+                cursor: (!url.trim() || extracting) ? 'not-allowed' : 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {extracting ? '⏳ Extraction...' : '📜 Extraire'}
+            </button>
+          </div>
+          <p style={{ fontSize: 10, color: 'rgba(237,232,219,0.4)', margin: 0 }}>
+            Accepte : youtube.com/watch?v=ID, youtu.be/ID, /shorts/, /embed/. Priorite FR puis EN.
+          </p>
+        </div>
+
+        {currentTranscript && (
+          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 700, color: '#EDE8DB', margin: '0 0 6px' }}>📜 Transcript actif</h3>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 10 }}>
+                  <span style={{ background: `${STUDIA_COLOR}15`, color: STUDIA_COLOR, padding: '3px 8px', borderRadius: 5, fontWeight: 700 }}>📺 {currentTranscript.videoId}</span>
+                  <span style={{ background: 'rgba(255,255,255,0.04)', color: 'rgba(237,232,219,0.6)', padding: '3px 8px', borderRadius: 5 }}>{currentTranscript.langue.toUpperCase()} {currentTranscript.estAutoGeneree ? '(auto)' : '(manuel)'}</span>
+                  <span style={{ background: 'rgba(255,255,255,0.04)', color: 'rgba(237,232,219,0.6)', padding: '3px 8px', borderRadius: 5 }}>⏱️ {fmtTime(currentTranscript.dureeSec)}</span>
+                  <span style={{ background: 'rgba(255,255,255,0.04)', color: 'rgba(237,232,219,0.6)', padding: '3px 8px', borderRadius: 5 }}>{currentTranscript.nbSegments} segments</span>
+                  <span style={{ background: 'rgba(255,255,255,0.04)', color: 'rgba(237,232,219,0.6)', padding: '3px 8px', borderRadius: 5 }}>{currentTranscript.texteComplet.length.toLocaleString('fr-FR')} caracteres</span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                <button onClick={copierTexte} style={{ padding: '6px 10px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(237,232,219,0.6)', fontSize: 10, cursor: 'pointer' }}>📋 Copier</button>
+                <button onClick={exporter} style={{ padding: '6px 10px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(237,232,219,0.6)', fontSize: 10, cursor: 'pointer' }}>💾 .md</button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: 0 }}>
+              <button onClick={() => setActiveView('texte')} style={{ padding: '8px 14px', border: 'none', background: 'transparent', color: activeView === 'texte' ? STUDIA_COLOR : 'rgba(237,232,219,0.4)', fontSize: 12, fontWeight: activeView === 'texte' ? 700 : 500, cursor: 'pointer', borderBottom: activeView === 'texte' ? `2px solid ${STUDIA_COLOR}` : '2px solid transparent', marginBottom: -1 }}>📄 Texte brut</button>
+              <button onClick={() => setActiveView('analyse')} style={{ padding: '8px 14px', border: 'none', background: 'transparent', color: activeView === 'analyse' ? STUDIA_COLOR : 'rgba(237,232,219,0.4)', fontSize: 12, fontWeight: activeView === 'analyse' ? 700 : 500, cursor: 'pointer', borderBottom: activeView === 'analyse' ? `2px solid ${STUDIA_COLOR}` : '2px solid transparent', marginBottom: -1 }}>✨ Analyse IA{currentAnalyse && ' ✓'}</button>
+            </div>
+
+            {activeView === 'texte' && (
+              <>
+                <div style={{ background: 'rgba(0,0,0,0.25)', borderRadius: 8, padding: 16, maxHeight: 360, overflowY: 'auto', marginBottom: 12 }}>
+                  <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.85)', margin: 0, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
+                    {currentTranscript.texteComplet}
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => setShowSegments(!showSegments)}
+                  style={{ width: '100%', padding: '8px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)', color: 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: 700, cursor: 'pointer', marginBottom: showSegments ? 10 : 0, textAlign: 'left', display: 'flex', justifyContent: 'space-between' }}>
+                  <span>{showSegments ? '▼' : '▶'} Segments avec timestamps ({currentTranscript.nbSegments})</span>
+                  <span>{showSegments ? 'Replier' : 'Deplier'}</span>
+                </button>
+
+                {showSegments && (
+                  <div style={{ background: 'rgba(0,0,0,0.15)', borderRadius: 8, padding: 10, maxHeight: 280, overflowY: 'auto' }}>
+                    {currentTranscript.segments.map((seg, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                        <span style={{ fontSize: 10, color: STUDIA_COLOR, fontFamily: 'monospace', minWidth: 50, flexShrink: 0 }}>{fmtTime(seg.debut)}</span>
+                        <span style={{ fontSize: 11, color: 'rgba(237,232,219,0.7)', lineHeight: 1.5 }}>{seg.texte}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {activeView === 'analyse' && (
+              <>
+                {!currentAnalyse ? (
+                  <div style={{ background: 'rgba(127,119,221,0.05)', border: `1px dashed ${STUDIA_COLOR}40`, borderRadius: 12, padding: 32, textAlign: 'center' }}>
+                    <div style={{ fontSize: 36, marginBottom: 10 }}>✨</div>
+                    <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.6)', marginBottom: 14 }}>
+                      Analyse IA complete via GPT-4o
+                    </p>
+                    <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.4)', marginBottom: 16, lineHeight: 1.6 }}>
+                      Resume court + resume detaille + chapitres + themes + sentiment + citations marquantes<br/>
+                      Cout estime : ~0.02-0.05€ selon la longueur du transcript
+                    </p>
+                    <button
+                      onClick={analyser}
+                      disabled={analyzing}
+                      style={{
+                        padding: '12px 24px', borderRadius: 10, border: 'none',
+                        background: analyzing ? `${STUDIA_COLOR}40` : STUDIA_COLOR,
+                        color: '#0D1B2A', fontSize: 13, fontWeight: 800,
+                        cursor: analyzing ? 'wait' : 'pointer',
+                      }}
+                    >
+                      {analyzing ? '⏳ Analyse en cours (10-30s)...' : '✨ Analyser avec GPT-4o'}
+                    </button>
+                    {!hasOpenAIKey && (
+                      <p style={{ fontSize: 10, color: '#D4A853', marginTop: 10 }}>⚠️ Cle OpenAI non configuree. Clique pour la configurer.</p>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+                    <div style={{ background: 'rgba(127,119,221,0.06)', border: `1px solid ${STUDIA_COLOR}30`, borderRadius: 10, padding: 14 }}>
+                      <h4 style={{ fontSize: 10, fontWeight: 700, color: STUDIA_COLOR, textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 8px' }}>💡 Resume court</h4>
+                      <p style={{ fontSize: 13, color: '#EDE8DB', margin: 0, lineHeight: 1.6 }}>{currentAnalyse.resume_court}</p>
+                    </div>
+
+                    <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 14 }}>
+                      <h4 style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.5)', textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 8px' }}>📋 Resume detaille</h4>
+                      <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.85)', margin: 0, lineHeight: 1.7 }}>{currentAnalyse.resume_detaille}</p>
+                    </div>
+
+                    {currentAnalyse.chapitres && currentAnalyse.chapitres.length > 0 && (
+                      <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 14 }}>
+                        <h4 style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.5)', textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 10px' }}>📚 Chapitres ({currentAnalyse.chapitres.length})</h4>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {currentAnalyse.chapitres.map((c, i) => (
+                            <div key={i} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 6, padding: '8px 10px', borderLeft: `3px solid ${STUDIA_COLOR}` }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, gap: 8 }}>
+                                <span style={{ fontSize: 12, fontWeight: 700, color: '#EDE8DB' }}>{i + 1}. {c.titre}</span>
+                                {c.debut_approximatif && <span style={{ fontSize: 10, color: STUDIA_COLOR, fontFamily: 'monospace', flexShrink: 0 }}>{c.debut_approximatif}</span>}
+                              </div>
+                              <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.6)', margin: 0, lineHeight: 1.5 }}>{c.description_courte}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {currentAnalyse.themes && currentAnalyse.themes.length > 0 && (
+                      <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 14 }}>
+                        <h4 style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.5)', textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 10px' }}>🏷️ Themes ({currentAnalyse.themes.length})</h4>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {currentAnalyse.themes.map((t, i) => (
+                            <span key={i} style={{ fontSize: 11, padding: '4px 10px', borderRadius: 14, background: `${STUDIA_COLOR}15`, color: STUDIA_COLOR, fontWeight: 700, border: `1px solid ${STUDIA_COLOR}30` }}>{t}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 14 }}>
+                      <h4 style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.5)', textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 8px' }}>🎭 Sentiment general</h4>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                        <span style={{ fontSize: 16 }}>{currentAnalyse.sentiment === 'positif' ? '😊' : currentAnalyse.sentiment === 'negatif' ? '😟' : currentAnalyse.sentiment === 'mixte' ? '😐' : '🙂'}</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: currentAnalyse.sentiment === 'positif' ? '#5BC78A' : currentAnalyse.sentiment === 'negatif' ? '#C75B4E' : currentAnalyse.sentiment === 'mixte' ? '#D4A853' : 'rgba(237,232,219,0.7)', textTransform: 'capitalize' }}>{currentAnalyse.sentiment}</span>
+                      </div>
+                      <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.6)', margin: 0, lineHeight: 1.5 }}>{currentAnalyse.sentiment_description}</p>
+                    </div>
+
+                    {currentAnalyse.citations_marquantes && currentAnalyse.citations_marquantes.length > 0 && (
+                      <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10, padding: 14 }}>
+                        <h4 style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.5)', textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 10px' }}>💬 Citations marquantes</h4>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {currentAnalyse.citations_marquantes.map((c, i) => (
+                            <blockquote key={i} style={{ margin: 0, padding: '8px 12px', background: 'rgba(0,0,0,0.2)', borderLeft: `3px solid ${STUDIA_COLOR}`, borderRadius: 4, fontSize: 12, fontStyle: 'italic', color: 'rgba(237,232,219,0.85)', lineHeight: 1.6 }}>"{c}"</blockquote>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', fontSize: 10, color: 'rgba(237,232,219,0.4)' }}>
+                      💰 Cout reel : {currentAnalyse.cout_estime_eur.toFixed(4)}€ · {currentAnalyse.nb_tokens_utilises} tokens
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', marginTop: 16, paddingTop: 14 }}>
+              <h4 style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 10px' }}>📨 Envoyer vers un module</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                <button onClick={() => envoyerVers('contenu')} style={{ padding: '10px', borderRadius: 8, border: '1px solid rgba(127,119,221,0.3)', background: 'rgba(127,119,221,0.08)', color: STUDIA_COLOR, fontSize: 11, fontWeight: 700, cursor: 'pointer', textAlign: 'left' }}>
+                  ✍️ Contenu<br/><span style={{ fontSize: 9, fontWeight: 400, opacity: 0.7 }}>Pour repurposer en post</span>
+                </button>
+                <button onClick={() => envoyerVers('cinema')} style={{ padding: '10px', borderRadius: 8, border: '1px solid rgba(127,119,221,0.3)', background: 'rgba(127,119,221,0.08)', color: STUDIA_COLOR, fontSize: 11, fontWeight: 700, cursor: 'pointer', textAlign: 'left' }}>
+                  🎬 Studio Cinema<br/><span style={{ fontSize: 9, fontWeight: 400, opacity: 0.7 }}>Comme matiere a script</span>
+                </button>
+                <button onClick={() => envoyerVers('source')} style={{ padding: '10px', borderRadius: 8, border: '1px solid rgba(127,119,221,0.3)', background: 'rgba(127,119,221,0.08)', color: STUDIA_COLOR, fontSize: 11, fontWeight: 700, cursor: 'pointer', textAlign: 'left' }}>
+                  📚 Source<br/><span style={{ fontSize: 9, fontWeight: 400, opacity: 0.7 }}>Archiver en R2</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {history.length > 0 && (
+          <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: 20 }}>
+            <h3 style={{ fontSize: 11, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>📚 Historique ({history.length})</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
+              {history.map(h => {
+                const isActive = currentTranscript?.id === h.id
+                return (
+                  <div key={h.id} style={{ background: isActive ? `${STUDIA_COLOR}10` : 'rgba(255,255,255,0.03)', border: `1px solid ${isActive ? STUDIA_COLOR : 'rgba(255,255,255,0.06)'}`, borderRadius: 8, padding: '8px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0, cursor: 'pointer' }} onClick={() => charger(h)}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: isActive ? STUDIA_COLOR : '#EDE8DB', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        📺 {h.videoId} · {fmtTime(h.dureeSec)} · {h.langue.toUpperCase()}
+                      </div>
+                      <div style={{ fontSize: 9, color: 'rgba(237,232,219,0.4)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {h.texteComplet.slice(0, 100)}...
+                      </div>
+                      {h.analyse && <div style={{ fontSize: 9, color: '#5BC78A', marginTop: 3 }}>✨ Analyse IA disponible</div>}
+                    </div>
+                    <button onClick={(e) => { e.stopPropagation(); supprimer(h.id) }} style={{ padding: '4px 8px', borderRadius: 6, border: 'none', background: 'transparent', color: 'rgba(237,232,219,0.3)', fontSize: 11, cursor: 'pointer', flexShrink: 0 }}>✕</button>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
+
 
 // ── PAGE PRINCIPALE ───────────────────────────────────────────────
 export default function PageStudIA({ project }) {
@@ -2657,10 +3122,11 @@ export default function PageStudIA({ project }) {
         <span style={{ fontSize: 12, color: 'rgba(237,232,219,0.5)' }}>{tab?.subtitle}</span>
       </div>
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        {activeTab === 'voix'   && <TabVoix project={project} />}
-        {activeTab === 'images' && <TabImages project={project} />}
-        {activeTab === 'cinema' && <TabCinema project={project} />}
-        {activeTab === 'shorts' && <TabShorts project={project} />}
+        {activeTab === 'voix'       && <TabVoix project={project} />}
+        {activeTab === 'images'     && <TabImages project={project} />}
+        {activeTab === 'cinema'     && <TabCinema project={project} />}
+        {activeTab === 'shorts'     && <TabShorts project={project} />}
+        {activeTab === 'transcript' && <TabTranscript project={project} />}
       </div>
     </div>
   )
