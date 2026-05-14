@@ -81,6 +81,43 @@ const LANGUES_WIKI = [
   {value:'it', label:'Italiano'}, {value:'pt', label:'Português'},
 ]
 
+// ── BIBLIOTHEQUE R2 : helpers ────────────────────────────────────
+const TYPES_FICHIERS_BIBLIO = [
+  { value:'', label:'Tous types' },
+  { value:'text', label:'Texte (.txt/.md)', icon:'📄' },
+  { value:'pdf', label:'PDF', icon:'📕' },
+  { value:'image', label:'Image (.jpg/.png)', icon:'🖼️' },
+  { value:'other', label:'Autre', icon:'📦' },
+]
+
+function detectTypeFichier(key, contentType) {
+  const k = (key || '').toLowerCase()
+  const ct = (contentType || '').toLowerCase()
+  if (ct.includes('text') || k.endsWith('.txt') || k.endsWith('.md')) return 'text'
+  if (ct.includes('pdf') || k.endsWith('.pdf')) return 'pdf'
+  if (ct.includes('image') || /\.(jpg|jpeg|png|gif|webp)$/.test(k)) return 'image'
+  return 'other'
+}
+
+function iconePourType(type) {
+  return { text:'📄', pdf:'📕', image:'🖼️', other:'📦' }[type] || '📦'
+}
+
+function formatTaille(bytes) {
+  if (!bytes) return '?'
+  if (bytes < 1024) return `${bytes} o`
+  if (bytes < 1024*1024) return `${Math.round(bytes/1024)} Ko`
+  return `${(bytes/1024/1024).toFixed(1)} Mo`
+}
+
+function formatDateBiblio(iso) {
+  if (!iso) return ''
+  try {
+    const d = new Date(iso)
+    return d.toLocaleDateString('fr-FR', { day:'2-digit', month:'short', year:'numeric' })
+  } catch { return '' }
+}
+
 // ═══════════════════════════════════════════════════════════════
 //                       HELPERS LOCALSTORAGE
 // ═══════════════════════════════════════════════════════════════
@@ -209,7 +246,7 @@ export default function PageSource({ project }) {
   const pollIntervalRef = useRef(null)
 
   // Lecteur modal
-  const [lecteurOuvert, setLecteurOuvert] = useState(null) // { titre, source, key, ...}
+  const [lecteurOuvert, setLecteurOuvert] = useState(null)
   const [lecteurTexte, setLecteurTexte] = useState('')
   const [lecteurLoading, setLecteurLoading] = useState(false)
   const [lecteurError, setLecteurError] = useState(null)
@@ -217,6 +254,149 @@ export default function PageSource({ project }) {
   // Surlignages (par favori/document)
   const [highlights, setHighlights] = useState(() => chargerStorage(HIGHLIGHTS_STORAGE_KEY))
   const [couleurActive, setCouleurActive] = useState('jaune')
+
+  // ── BIBLIOTHEQUE R2 ────────────────────────────────────────────
+  const [vueActive, setVueActive] = useState('recherche')
+  const [biblioFichiers, setBiblioFichiers] = useState([])
+  const [biblioLoading, setBiblioLoading] = useState(false)
+  const [biblioError, setBiblioError] = useState(null)
+  const [biblioSearch, setBiblioSearch] = useState('')
+  const [biblioFiltreProjet, setBiblioFiltreProjet] = useState('')
+  const [biblioFiltreTheme, setBiblioFiltreTheme] = useState('')
+  const [biblioFiltreSource, setBiblioFiltreSource] = useState('')
+  const [biblioFiltreType, setBiblioFiltreType] = useState('')
+  const [biblioFiltreDateMin, setBiblioFiltreDateMin] = useState('')
+  const [biblioFiltreDateMax, setBiblioFiltreDateMax] = useState('')
+  const [biblioMenuOuvert, setBiblioMenuOuvert] = useState(null)
+
+  const chargerBibliotheque = useCallback(async () => {
+    if (!apiKey) { setBiblioError('Cle API Agents Doppler introuvable'); return }
+    setBiblioLoading(true)
+    setBiblioError(null)
+    try {
+      const response = await fetch(`${AGENTS_API_URL}/sources/r2/list?max_results=1000`, {
+        headers: { 'X-API-Key': apiKey }
+      })
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}))
+        throw new Error(errData.detail || `Erreur ${response.status}`)
+      }
+      const data = await response.json()
+      setBiblioFichiers(data.fichiers || [])
+    } catch (err) {
+      console.error('[Biblio] Erreur:', err)
+      setBiblioError(err.message || 'Erreur chargement bibliotheque')
+    } finally {
+      setBiblioLoading(false)
+    }
+  }, [apiKey])
+
+  // Auto-load quand on bascule vers la biblio
+  useEffect(() => {
+    if (vueActive === 'biblio' && biblioFichiers.length === 0 && !biblioLoading && apiKey) {
+      chargerBibliotheque()
+    }
+  }, [vueActive, apiKey])
+
+  // Liste filtree
+  const biblioFichiersFiltres = biblioFichiers.filter(f => {
+    if (biblioSearch.trim()) {
+      const q = biblioSearch.trim().toLowerCase()
+      const inKey = (f.key || '').toLowerCase().includes(q)
+      const inTitre = (f.metadata?.titre || '').toLowerCase().includes(q)
+      const inAuteur = (f.metadata?.auteur || '').toLowerCase().includes(q)
+      if (!inKey && !inTitre && !inAuteur) return false
+    }
+    if (biblioFiltreProjet && f.projet_id !== biblioFiltreProjet) return false
+    if (biblioFiltreTheme && f.theme !== biblioFiltreTheme) return false
+    if (biblioFiltreSource && (f.metadata?.source || '') !== biblioFiltreSource) return false
+    if (biblioFiltreType) {
+      const t = detectTypeFichier(f.key, f.content_type)
+      if (t !== biblioFiltreType) return false
+    }
+    if (biblioFiltreDateMin && f.last_modified && f.last_modified < biblioFiltreDateMin) return false
+    if (biblioFiltreDateMax && f.last_modified && f.last_modified > biblioFiltreDateMax + 'T23:59:59') return false
+    return true
+  })
+
+  // Groupement par document (projet/theme/doc_id)
+  const biblioGroupes = (() => {
+    const groupes = {}
+    for (const f of biblioFichiersFiltres) {
+      const parts = (f.key || '').split('/')
+      const docKey = parts.slice(0, 3).join('/') || f.key
+      if (!groupes[docKey]) groupes[docKey] = { docKey, fichiers: [], meta: f.metadata || {}, projet_id: f.projet_id, theme: f.theme }
+      groupes[docKey].fichiers.push(f)
+    }
+    return Object.values(groupes).sort((a, b) => {
+      const da = a.fichiers[0]?.last_modified || ''
+      const db = b.fichiers[0]?.last_modified || ''
+      return db.localeCompare(da)
+    })
+  })()
+
+  // Listes uniques pour filtres
+  const projetsUniques = [...new Set(biblioFichiers.map(f => f.projet_id).filter(Boolean))].sort()
+  const themesUniques = [...new Set(biblioFichiers.map(f => f.theme).filter(Boolean))].sort()
+  const sourcesUniques = [...new Set(biblioFichiers.map(f => f.metadata?.source).filter(Boolean))].sort()
+
+  const ouvrirFichierR2 = async (fichier) => {
+    setBiblioMenuOuvert(null)
+    const type = detectTypeFichier(fichier.key, fichier.content_type)
+    if (type === 'text') {
+      ouvrirLecteur({
+        titre: fichier.metadata?.titre || fichier.key.split('/').pop(),
+        source: fichier.metadata?.source || 'gallica',
+        r2_key: fichier.key,
+        document_id: fichier.key,
+        theme: fichier.theme || null,
+        auteur: fichier.metadata?.auteur || null,
+        date: fichier.metadata?.date || null,
+      })
+    } else {
+      try {
+        const response = await fetch(`${AGENTS_API_URL}/sources/r2/presigned-url`, {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json', 'X-API-Key':apiKey },
+          body: JSON.stringify({ key: fichier.key, expires_in: 3600 })
+        })
+        if (!response.ok) throw new Error(`Erreur ${response.status}`)
+        const data = await response.json()
+        window.open(data.url, '_blank')
+      } catch (err) {
+        setBiblioError(`Impossible d'ouvrir : ${err.message}`)
+      }
+    }
+  }
+
+  const telechargerFichierR2 = async (fichier) => {
+    setBiblioMenuOuvert(null)
+    try {
+      const response = await fetch(`${AGENTS_API_URL}/sources/r2/presigned-url`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', 'X-API-Key':apiKey },
+        body: JSON.stringify({ key: fichier.key, expires_in: 3600 })
+      })
+      if (!response.ok) throw new Error(`Erreur ${response.status}`)
+      const data = await response.json()
+      const a = document.createElement('a')
+      a.href = data.url
+      a.download = fichier.key.split('/').pop()
+      a.click()
+    } catch (err) {
+      setBiblioError(`Impossible de telecharger : ${err.message}`)
+    }
+  }
+
+  const resetFiltresBiblio = () => {
+    setBiblioSearch('')
+    setBiblioFiltreProjet('')
+    setBiblioFiltreTheme('')
+    setBiblioFiltreSource('')
+    setBiblioFiltreType('')
+    setBiblioFiltreDateMin('')
+    setBiblioFiltreDateMax('')
+  }
 
   // ── EFFETS ────────────────────────────────────────────────────
 
@@ -241,7 +421,7 @@ export default function PageSource({ project }) {
       }
       return
     }
-    if (pollIntervalRef.current) return // déjà en cours
+    if (pollIntervalRef.current) return
 
     pollIntervalRef.current = setInterval(async () => {
       if (!apiKey) return
@@ -269,7 +449,7 @@ export default function PageSource({ project }) {
         setOcrJobs(updatedJobs)
         sauverStorage(OCR_JOBS_STORAGE_KEY, updatedJobs)
       }
-    }, 5000) // toutes les 5 sec
+    }, 5000)
 
     return () => {
       if (pollIntervalRef.current) {
@@ -308,7 +488,7 @@ export default function PageSource({ project }) {
         projet_id: project?.id || 'general',
         theme: theme.trim() || null,
         ajoute_le: new Date().toISOString(),
-        r2_key: null, // sera rempli quand téléchargé
+        r2_key: null,
       }
       newFavoris = [fav, ...favoris]
     }
@@ -483,7 +663,6 @@ export default function PageSource({ project }) {
       console.log('[Source] Telechargement OK:', data)
       setDownloadStatus(prev => ({...prev, [docId]: 'ok'}))
 
-      // Si c'est un favori, on sauvegarde la r2_key (premier fichier .txt si dispo)
       if (estFavori(docId)) {
         const txtFile = data.fichiers_uploades.find(f => f.content_type.includes('text'))
         if (txtFile) mettreAJourFavoriR2Key(docId, txtFile.key)
@@ -550,14 +729,12 @@ export default function PageSource({ project }) {
 
   // ── LECTEUR : OUVRIR DOC ──────────────────────────────────────
   const ouvrirLecteur = async (docInfo) => {
-    // docInfo = { titre, source, r2_key, document_id, theme, auteur, date }
     setLecteurOuvert(docInfo)
     setLecteurTexte('')
     setLecteurError(null)
     setLecteurLoading(true)
 
     try {
-      // Demande URL présignée
       const response = await fetch(`${AGENTS_API_URL}/sources/r2/presigned-url`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json', 'X-API-Key': apiKey},
@@ -568,7 +745,6 @@ export default function PageSource({ project }) {
         throw new Error(errData.detail || `Erreur ${response.status}`)
       }
       const data = await response.json()
-      // Télécharge le texte depuis Cloudflare R2 directement
       const textResponse = await fetch(data.url)
       if (!textResponse.ok) throw new Error(`Erreur Cloudflare : ${textResponse.status}`)
       const text = await textResponse.text()
@@ -629,7 +805,23 @@ export default function PageSource({ project }) {
   // ═══════════════════════════════════════════════════════════════
 
   return (
-    <div style={{display:'flex', gap:20, height:'100%', overflow:'hidden'}}>
+    <div style={{display:'flex', flexDirection:'column', gap:12, height:'100%', overflow:'hidden'}}>
+
+      {/* ═════ ONGLETS PRINCIPAUX ═════ */}
+      <div style={{display:'flex', gap:4, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:10, padding:3, flexShrink:0, alignSelf:'flex-start'}}>
+        {[
+          {id:'recherche', label:'🔍 Recherche'},
+          {id:'biblio', label:'📚 Bibliothèque'}
+        ].map(v => (
+          <button key={v.id} onClick={()=>setVueActive(v.id)}
+            style={{padding:'7px 16px', borderRadius:8, border:'none',
+              background:vueActive===v.id ? project.color : 'transparent',
+              color:vueActive===v.id ? '#0D1B2A' : 'rgba(237,232,219,0.6)',
+              fontSize:12, fontWeight:800, cursor:'pointer', transition:'all 0.15s'}}>
+            {v.label}
+          </button>
+        ))}
+      </div>
 
       {/* ═════ MODALE GESTION SOURCES ═════ */}
       {sourcesModal && (
@@ -721,7 +913,6 @@ export default function PageSource({ project }) {
       {lecteurOuvert && (
         <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.92)', zIndex:1100, display:'flex', flexDirection:'column'}}>
 
-          {/* Barre haut */}
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 24px', borderBottom:'1px solid rgba(255,255,255,0.1)', flexShrink:0, gap:14}}>
             <div style={{flex:1, minWidth:0}}>
               <h2 style={{fontSize:15, fontWeight:700, color:'#EDE8DB', margin:'0 0 3px', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}}>
@@ -743,7 +934,6 @@ export default function PageSource({ project }) {
             </button>
           </div>
 
-          {/* Toolbar surligneur */}
           <div style={{display:'flex', alignItems:'center', gap:10, padding:'10px 24px', borderBottom:'1px solid rgba(255,255,255,0.05)', flexShrink:0, background:'rgba(255,255,255,0.02)'}}>
             <span style={{fontSize:11, fontWeight:700, color:'rgba(237,232,219,0.6)', textTransform:'uppercase', letterSpacing:'0.08em'}}>
               Couleur :
@@ -778,10 +968,8 @@ export default function PageSource({ project }) {
             </p>
           </div>
 
-          {/* Zone contenu + sidebar surlignages */}
           <div style={{flex:1, display:'flex', overflow:'hidden'}}>
 
-            {/* Texte du document - fond creme style liseuse */}
             <div style={{flex:1, overflowY:'auto', padding:'30px 60px', color:'#3D2E1F', fontFamily:"'Georgia', serif", fontSize:16, lineHeight:1.8, background:'#F4ECD8'}}>
               {lecteurLoading && (
                 <div style={{textAlign:'center', padding:60}}>
@@ -798,7 +986,6 @@ export default function PageSource({ project }) {
                 const formatted = formatTexteOCR(lecteurTexte)
                 return (
                   <div style={{maxWidth:760, margin:'0 auto'}}>
-                    {/* HEADER METADATA */}
                     {formatted.header.length > 0 && (
                       <div style={{padding:'18px 24px', background:'rgba(91,163,199,0.08)', border:'1px solid rgba(91,163,199,0.2)', borderRadius:10, marginBottom:32, fontFamily:'Inter, sans-serif', fontSize:13}}>
                         {formatted.header.map((line, i) => {
@@ -810,7 +997,6 @@ export default function PageSource({ project }) {
                       </div>
                     )}
 
-                    {/* PAGES */}
                     {formatted.pages.map(p => (
                       <div key={`page_${p.num}`} style={{marginBottom:30}}>
                         <div style={{display:'flex', alignItems:'center', gap:10, margin:'24px 0 16px', opacity:0.5}}>
@@ -832,7 +1018,6 @@ export default function PageSource({ project }) {
               })()}
             </div>
 
-            {/* Sidebar surlignages du document */}
             <div style={{width:300, borderLeft:'1px solid rgba(255,255,255,0.08)', overflowY:'auto', padding:'20px 16px', flexShrink:0}}>
               <h3 style={{fontSize:11, fontWeight:700, color:'rgba(237,232,219,0.5)', textTransform:'uppercase', letterSpacing:'0.08em', margin:'0 0 14px'}}>
                 ✨ Surlignages ({surlignagesDocument(lecteurOuvert.document_id).length})
@@ -862,457 +1047,619 @@ export default function PageSource({ project }) {
         </div>
       )}
 
-      {/* ═════ COLONNE GAUCHE ═════ */}
-      <div style={{flex:1, display:'flex', flexDirection:'column', gap:10, overflow:'hidden', minWidth:0}}>
+      {/* ═════ VUE RECHERCHE ═════ */}
+      {vueActive === 'recherche' && (
+        <div style={{display:'flex', gap:20, flex:1, overflow:'hidden', minHeight:0}}>
 
-        {/* HEADER COMPACT */}
-        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0, gap:14}}>
-          <p style={{fontSize:11, color:'rgba(237,232,219,0.5)', margin:0, flex:1}}>
-            {sourceConfig.description} · Cloudflare R2
-            {!apiKey && <span style={{color:'#C75B4E', marginLeft:8, fontWeight:700}}>⚠️ Clé Doppler manquante</span>}
-          </p>
-          <button onClick={()=>setSourcesModal(true)} style={{padding:'6px 12px', borderRadius:8, border:`1px solid ${project.color}40`, background:`${project.color}15`, color:project.color, fontSize:11, fontWeight:700, cursor:'pointer', whiteSpace:'nowrap'}}>
-            ⚙️ Gérer les sources
-          </button>
-        </div>
+          {/* ═════ COLONNE GAUCHE ═════ */}
+          <div style={{flex:1, display:'flex', flexDirection:'column', gap:10, overflow:'hidden', minWidth:0}}>
 
-        {/* SEGMENTED CONTROL 4 SOURCES */}
-        <div style={{display:'flex', gap:0, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:10, padding:3, flexShrink:0}}>
-          {SOURCES.map(s => {
-            const isActive = sourceActive === s.id
-            return (
-              <button
-                key={s.id}
-                onClick={()=>handleChangeSource(s.id)}
-                style={{
-                  flex:1, padding:'9px 8px', borderRadius:8, border:'none',
-                  background:isActive ? s.color : 'transparent',
-                  color:isActive ? '#0D1B2A' : 'rgba(237,232,219,0.6)',
-                  fontSize:11, fontWeight:800, cursor:'pointer',
-                  transition:'all 0.15s ease',
-                  display:'flex', alignItems:'center', justifyContent:'center', gap:5,
-                }}>
-                <span style={{fontSize:13}}>{s.icon}</span>
-                <span style={{whiteSpace:'nowrap'}}>{s.label}</span>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0, gap:14}}>
+              <p style={{fontSize:11, color:'rgba(237,232,219,0.5)', margin:0, flex:1}}>
+                {sourceConfig.description} · Cloudflare R2
+                {!apiKey && <span style={{color:'#C75B4E', marginLeft:8, fontWeight:700}}>⚠️ Clé Doppler manquante</span>}
+              </p>
+              <button onClick={()=>setSourcesModal(true)} style={{padding:'6px 12px', borderRadius:8, border:`1px solid ${project.color}40`, background:`${project.color}15`, color:project.color, fontSize:11, fontWeight:700, cursor:'pointer', whiteSpace:'nowrap'}}>
+                ⚙️ Gérer les sources
               </button>
-            )
-          })}
-        </div>
-
-        {/* BARRE RECHERCHE + THEME */}
-        <div style={{background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:'12px 14px', flexShrink:0}}>
-          <div style={{display:'flex', gap:8, marginBottom:10}}>
-            <input
-              value={query} onChange={e=>setQuery(e.target.value)}
-              onKeyDown={e=>{if(e.key==='Enter')handleSearch()}}
-              placeholder={sourceConfig.placeholder}
-              style={{flex:1, padding:'10px 14px', borderRadius:10, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:13, outline:'none', fontFamily:"'Nunito Sans',sans-serif"}}
-            />
-            <button onClick={handleSearch} disabled={loading || !apiKey}
-              style={{padding:'10px 20px', borderRadius:10, border:'none', background:loading ? `${project.color}40` : project.color, color:'#0D1B2A', fontSize:12, fontWeight:800, cursor:loading || !apiKey ? 'not-allowed' : 'pointer', opacity:!apiKey ? 0.5 : 1, whiteSpace:'nowrap'}}>
-              {loading ? '⏳ Recherche...' : '🔍 Chercher'}
-            </button>
-          </div>
-
-          <div style={{display:'flex', gap:8, alignItems:'center'}}>
-            <label style={{fontSize:11, color:'rgba(237,232,219,0.5)', fontWeight:700, whiteSpace:'nowrap'}}>Thème R2 :</label>
-            <input value={theme} onChange={e=>setTheme(e.target.value)}
-              placeholder="ovnis, stavisky, 1968…"
-              style={{flex:1, padding:'7px 10px', borderRadius:8, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:12, outline:'none'}}/>
-            <button onClick={()=>setFiltresOuverts(!filtresOuverts)}
-              style={{background:'transparent', border:'1px solid rgba(255,255,255,0.1)', color:'rgba(237,232,219,0.6)', fontSize:11, fontWeight:700, cursor:'pointer', padding:'7px 10px', borderRadius:8, whiteSpace:'nowrap'}}>
-              {filtresOuverts ? '▼' : '▶'} Filtres
-            </button>
-          </div>
-
-          {filtresOuverts && (
-            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginTop:12, paddingTop:12, borderTop:'1px solid rgba(255,255,255,0.05)'}}>
-              {sourceConfig.supportsDates && (
-                <div>
-                  <label style={{fontSize:9, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:3, textTransform:'uppercase', letterSpacing:'0.08em', fontWeight:700}}>Période</label>
-                  <div style={{display:'flex', gap:6, alignItems:'center'}}>
-                    <input type="number" value={dateDebut} onChange={e=>setDateDebut(e.target.value)} min="1800" max="2025"
-                      style={{flex:1, padding:'6px 8px', borderRadius:6, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}/>
-                    <span style={{fontSize:10, color:'rgba(237,232,219,0.3)'}}>→</span>
-                    <input type="number" value={dateFin} onChange={e=>setDateFin(e.target.value)} min="1800" max="2025"
-                      style={{flex:1, padding:'6px 8px', borderRadius:6, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}/>
-                  </div>
-                </div>
-              )}
-              {sourceConfig.supportsTypeDoc && (
-                <div>
-                  <label style={{fontSize:9, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:3, textTransform:'uppercase', letterSpacing:'0.08em', fontWeight:700}}>Type de document</label>
-                  <select value={typeDoc} onChange={e=>setTypeDoc(e.target.value)}
-                    style={{width:'100%', padding:'6px 8px', borderRadius:6, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}>
-                    {sourceConfig.typeDocOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                  </select>
-                </div>
-              )}
-              {sourceConfig.supportsLang && (
-                <div>
-                  <label style={{fontSize:9, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:3, textTransform:'uppercase', letterSpacing:'0.08em', fontWeight:700}}>Langue</label>
-                  <select value={lang} onChange={e=>setLang(e.target.value)}
-                    style={{width:'100%', padding:'6px 8px', borderRadius:6, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}>
-                    {LANGUES_WIKI.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
-                  </select>
-                </div>
-              )}
-              {sourceConfig.supportsTendance && (
-                <div>
-                  <label style={{fontSize:9, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:3, textTransform:'uppercase', letterSpacing:'0.08em', fontWeight:700}}>Tendance politique</label>
-                  <div style={{display:'flex', gap:4, flexWrap:'wrap'}}>
-                    {['Gauche','Centre','Droite'].map(t => (
-                      <button key={t} onClick={()=>setTendances(prev=>prev.includes(t)?prev.filter(x=>x!==t):[...prev,t])}
-                        style={{padding:'4px 9px', borderRadius:12, border:`1px solid ${tendances.includes(t)?project.color:'rgba(255,255,255,0.1)'}`, background:tendances.includes(t)?`${project.color}20`:'transparent', color:tendances.includes(t)?project.color:'rgba(237,232,219,0.5)', fontSize:10, fontWeight:700, cursor:'pointer'}}>{t}</button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {!sourceConfig.supportsDates && !sourceConfig.supportsTypeDoc && !sourceConfig.supportsLang && !sourceConfig.supportsTendance && (
-                <div style={{gridColumn:'1 / -1', padding:12, textAlign:'center'}}>
-                  <p style={{fontSize:11, color:'rgba(237,232,219,0.4)', margin:0}}>Pas de filtres avancés pour cette source.</p>
-                </div>
-              )}
             </div>
-          )}
-        </div>
 
-        {/* ERREUR */}
-        {error && (
-          <div style={{background:'rgba(199,91,78,0.1)', border:'1px solid rgba(199,91,78,0.3)', borderRadius:8, padding:'8px 12px', flexShrink:0, display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-            <p style={{fontSize:11, color:'#C75B4E', margin:0}}>⚠️ {error}</p>
-            <button onClick={()=>setError(null)} style={{background:'transparent', border:'none', color:'#C75B4E', cursor:'pointer', fontSize:14, padding:0}}>✕</button>
-          </div>
-        )}
-
-        {/* LABEL RESULTATS */}
-        <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0, padding:'0 4px'}}>
-          <p style={{fontSize:10, fontWeight:700, color:'rgba(237,232,219,0.4)', textTransform:'uppercase', letterSpacing:'0.08em', margin:0}}>
-            {searched
-              ? `${sourceConfig.label} — ${results.length} affichés sur ${totalHits.toLocaleString('fr-FR')} trouvés`
-              : `Lance une recherche dans ${sourceConfig.label}`}
-          </p>
-          {searched && results.length>0 && (
-            <p style={{fontSize:10, color:'rgba(91,199,138,0.7)', margin:0}}>
-              {hasMore ? `📄 Page ${currentPage}` : '✅ Tous affichés'}
-            </p>
-          )}
-        </div>
-
-        {/* ZONE RÉSULTATS */}
-        <div style={{display:'flex', flexDirection:'column', gap:8, overflowY:'auto', paddingRight:6, flex:'1 1 auto', minHeight:0,
-          scrollbarWidth:'thin', scrollbarColor:`${project.color}60 rgba(255,255,255,0.05)`}}>
-
-          {loading && (
-            <div style={{padding:40, textAlign:'center', color:'rgba(237,232,219,0.5)'}}>
-              <p style={{fontSize:28, margin:'0 0 8px'}}>⏳</p>
-              <p style={{fontSize:13, margin:0}}>Recherche dans {sourceConfig.label}…</p>
+            <div style={{display:'flex', gap:0, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:10, padding:3, flexShrink:0}}>
+              {SOURCES.map(s => {
+                const isActive = sourceActive === s.id
+                return (
+                  <button
+                    key={s.id}
+                    onClick={()=>handleChangeSource(s.id)}
+                    style={{
+                      flex:1, padding:'9px 8px', borderRadius:8, border:'none',
+                      background:isActive ? s.color : 'transparent',
+                      color:isActive ? '#0D1B2A' : 'rgba(237,232,219,0.6)',
+                      fontSize:11, fontWeight:800, cursor:'pointer',
+                      transition:'all 0.15s ease',
+                      display:'flex', alignItems:'center', justifyContent:'center', gap:5,
+                    }}>
+                    <span style={{fontSize:13}}>{s.icon}</span>
+                    <span style={{whiteSpace:'nowrap'}}>{s.label}</span>
+                  </button>
+                )
+              })}
             </div>
-          )}
 
-          {!loading && !searched && (
-            <div style={{padding:60, textAlign:'center', color:'rgba(237,232,219,0.3)'}}>
-              <p style={{fontSize:40, margin:'0 0 12px'}}>{sourceConfig.icon}</p>
-              <p style={{fontSize:14, margin:'0 0 6px', fontWeight:700}}>Aucune recherche dans {sourceConfig.label}</p>
-              <p style={{fontSize:11, margin:0, lineHeight:1.5}}>{sourceConfig.description}</p>
-            </div>
-          )}
-
-          {!loading && searched && results.length===0 && !error && (
-            <div style={{padding:40, textAlign:'center', color:'rgba(237,232,219,0.4)'}}>
-              <p style={{fontSize:28, margin:'0 0 8px'}}>🔎</p>
-              <p style={{fontSize:13, margin:0}}>Aucun résultat pour "{query}"</p>
-              <p style={{fontSize:11, margin:'4px 0 0', color:'rgba(237,232,219,0.3)'}}>Essaie avec d'autres mots-clés</p>
-            </div>
-          )}
-
-          {!loading && results.map((r, idx) => {
-            let borderColor = sourceConfig.color
-            let tendanceLabel = null
-            if (r.source === 'gallica') {
-              const journalDetecte = Object.keys(TENDANCES).find(j =>
-                (r.titre || '').includes(j) || (r.editeur || '').includes(j)
-              )
-              if (journalDetecte) {
-                const t = tendancePour(journalDetecte)
-                borderColor = t.couleur
-                tendanceLabel = t.label
-              }
-            }
-            const isFav = estFavori(r.id)
-            const canOcr = r.source === 'gallica' && r.type_doc && r.type_doc.toLowerCase().includes('monograph')
-            const isDownloaded = downloadStatus[r.id] === 'ok'
-
-            return (
-              <div key={`${r.id}_${idx}`}
-                style={{background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'12px 14px', borderLeft:`4px solid ${borderColor}`, display:'flex', gap:12, flexShrink:0}}>
-
-                {r.thumbnail && (
-                  <img src={r.thumbnail} alt=""
-                    style={{width:56, height:74, objectFit:'cover', borderRadius:5, flexShrink:0, background:'rgba(0,0,0,0.3)'}}
-                    onError={e=>{e.target.style.display='none'}}/>
-                )}
-
-                <div style={{flex:1, minWidth:0}}>
-                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:5, gap:10}}>
-                    <h4 style={{fontSize:13, fontWeight:700, color:'#EDE8DB', margin:0, lineHeight:1.4, flex:1}}>
-                      <span style={{color:'rgba(237,232,219,0.3)', fontSize:10, marginRight:6}}>#{idx+1}</span>
-                      {r.titre}
-                    </h4>
-                    <button onClick={()=>toggleFavori(r)}
-                      title={isFav ? 'Retirer des favoris' : 'Ajouter aux favoris'}
-                      style={{background:'transparent', border:'none', color:isFav ? '#D4A853' : 'rgba(237,232,219,0.3)', fontSize:18, cursor:'pointer', padding:0, lineHeight:1, transition:'color 0.2s'}}>
-                      {isFav ? '★' : '☆'}
-                    </button>
-                  </div>
-
-                  <div style={{display:'flex', alignItems:'center', gap:6, marginBottom:6, fontSize:10, flexWrap:'wrap'}}>
-                    {r.auteur && (<><span style={{color:'rgba(237,232,219,0.7)', fontWeight:700}}>{r.auteur}</span><span style={{color:'rgba(237,232,219,0.3)'}}>·</span></>)}
-                    {r.date && (<><span style={{color:'rgba(237,232,219,0.5)'}}>{r.date}</span><span style={{color:'rgba(237,232,219,0.3)'}}>·</span></>)}
-                    {r.editeur && (<><span style={{color:'rgba(237,232,219,0.5)'}}>{r.editeur}</span></>)}
-                    {r.type_doc && <span style={{fontSize:9, color:'rgba(237,232,219,0.4)', background:'rgba(255,255,255,0.04)', padding:'1px 6px', borderRadius:5}}>{r.type_doc}</span>}
-                    {r.ocr_quality != null && (
-                      <span style={{fontSize:9, color:r.ocr_quality>80 ? '#5BC78A' : r.ocr_quality>60 ? '#D4A853' : '#C75B4E', background:'rgba(255,255,255,0.04)', padding:'1px 6px', borderRadius:5}}>
-                        OCR {Math.round(r.ocr_quality)}%
-                      </span>
-                    )}
-                    {r.open_access === true && (
-                      <span style={{fontSize:9, color:'#5BC78A', background:'rgba(91,199,138,0.1)', padding:'1px 6px', borderRadius:5, fontWeight:700}}>🔓 Open Access</span>
-                    )}
-                    {r.open_access === false && (
-                      <span style={{fontSize:9, color:'rgba(237,232,219,0.5)', background:'rgba(255,255,255,0.04)', padding:'1px 6px', borderRadius:5}}>🔒 Payant</span>
-                    )}
-                    {r.is_borrowable === true && (
-                      <span style={{fontSize:9, color:'#D4A853', background:'rgba(212,168,83,0.1)', padding:'1px 6px', borderRadius:5, fontWeight:700}}>🔒 Emprunt</span>
-                    )}
-                    {r.is_borrowable === false && (
-                      <span style={{fontSize:9, color:'#5BC78A', background:'rgba(91,199,138,0.1)', padding:'1px 6px', borderRadius:5, fontWeight:700}}>🔓 Libre</span>
-                    )}
-                    {r.doi && (
-                      <span style={{fontSize:9, color:'rgba(237,232,219,0.4)', background:'rgba(255,255,255,0.04)', padding:'1px 6px', borderRadius:5, fontFamily:'monospace'}}>DOI:{r.doi.slice(0,18)}...</span>
-                    )}
-                    {tendanceLabel && (
-                      <span style={{fontSize:9, color:borderColor, background:'rgba(255,255,255,0.04)', padding:'1px 6px', borderRadius:5}}>{tendanceLabel}</span>
-                    )}
-                  </div>
-
-                  {r.snippet && (
-                    <p style={{fontSize:11, color:'rgba(237,232,219,0.6)', lineHeight:1.5, margin:'0 0 8px'}}>{r.snippet}</p>
-                  )}
-
-                  <div style={{display:'flex', gap:5, flexWrap:'wrap'}}>
-                    <a href={r.url_gallica} target="_blank" rel="noopener noreferrer"
-                      style={{padding:'4px 9px', borderRadius:6, border:`1px solid ${project.color}40`, background:`${project.color}10`, color:project.color, fontSize:10, fontWeight:700, cursor:'pointer', textDecoration:'none'}}>
-                      📖 {r.source === 'gallica' ? 'Lire sur Gallica' : r.source === 'wikipedia' ? 'Lire sur Wikipedia' : r.source === 'archive' ? 'Voir sur Archive' : 'Ouvrir le papier'}
-                    </a>
-                    {r.pdf_url && r.pdf_url !== r.url_gallica && (
-                      <a href={r.pdf_url} target="_blank" rel="noopener noreferrer"
-                        style={{padding:'4px 9px', borderRadius:6, border:'1px solid rgba(91,199,138,0.4)', background:'rgba(91,199,138,0.1)', color:'#5BC78A', fontSize:10, fontWeight:700, cursor:'pointer', textDecoration:'none'}}>
-                        📄 PDF
-                      </a>
-                    )}
-                    <button onClick={()=>handleDownload(r)} disabled={downloadStatus[r.id]==='loading' || downloadStatus[r.id]==='ok'} style={getDownloadButtonStyle(r.id)}>
-                      {getDownloadButtonLabel(r.id)}
-                    </button>
-                    {canOcr && (
-                      <button onClick={()=>handleStartOcr(r)}
-                        style={{padding:'4px 9px', borderRadius:6, border:'1px solid rgba(212,168,83,0.4)', background:'rgba(212,168,83,0.1)', color:'#D4A853', fontSize:10, fontWeight:700, cursor:'pointer'}}>
-                        🔬 OCR Tesseract
-                      </button>
-                    )}
-                    <button onClick={()=>navigator.clipboard.writeText(`${r.titre} — ${r.auteur || 'Anonyme'} (${r.date || 'n.d.'}). ${r.url_gallica}`)}
-                      style={{padding:'4px 9px', borderRadius:6, border:'1px solid rgba(255,255,255,0.1)', background:'transparent', color:'rgba(237,232,219,0.5)', fontSize:10, cursor:'pointer'}}>
-                      📋 Copier
-                    </button>
-                  </div>
-                </div>
+            <div style={{background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:'12px 14px', flexShrink:0}}>
+              <div style={{display:'flex', gap:8, marginBottom:10}}>
+                <input
+                  value={query} onChange={e=>setQuery(e.target.value)}
+                  onKeyDown={e=>{if(e.key==='Enter')handleSearch()}}
+                  placeholder={sourceConfig.placeholder}
+                  style={{flex:1, padding:'10px 14px', borderRadius:10, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:13, outline:'none', fontFamily:"'Nunito Sans',sans-serif"}}
+                />
+                <button onClick={handleSearch} disabled={loading || !apiKey}
+                  style={{padding:'10px 20px', borderRadius:10, border:'none', background:loading ? `${project.color}40` : project.color, color:'#0D1B2A', fontSize:12, fontWeight:800, cursor:loading || !apiKey ? 'not-allowed' : 'pointer', opacity:!apiKey ? 0.5 : 1, whiteSpace:'nowrap'}}>
+                  {loading ? '⏳ Recherche...' : '🔍 Chercher'}
+                </button>
               </div>
-            )
-          })}
 
-          {/* BOUTON CHARGER PLUS */}
-          {!loading && results.length > 0 && hasMore && (
-            <div style={{padding:'12px 0', display:'flex', justifyContent:'center', flexShrink:0}}>
-              <button onClick={handleLoadMore} disabled={loadingMore}
-                style={{padding:'12px 28px', borderRadius:10, border:`1px solid ${sourceConfig.color}60`, background:loadingMore ? `${sourceConfig.color}20` : `${sourceConfig.color}15`, color:sourceConfig.color, fontSize:12, fontWeight:800, cursor:loadingMore ? 'wait' : 'pointer', transition:'all 0.2s ease', display:'flex', alignItems:'center', gap:8}}>
-                {loadingMore ? '⏳ Chargement…' : `↓ Charger 50 résultats de plus (${results.length} / ${totalHits.toLocaleString('fr-FR')})`}
-              </button>
+              <div style={{display:'flex', gap:8, alignItems:'center'}}>
+                <label style={{fontSize:11, color:'rgba(237,232,219,0.5)', fontWeight:700, whiteSpace:'nowrap'}}>Thème R2 :</label>
+                <input value={theme} onChange={e=>setTheme(e.target.value)}
+                  placeholder="ovnis, stavisky, 1968…"
+                  style={{flex:1, padding:'7px 10px', borderRadius:8, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:12, outline:'none'}}/>
+                <button onClick={()=>setFiltresOuverts(!filtresOuverts)}
+                  style={{background:'transparent', border:'1px solid rgba(255,255,255,0.1)', color:'rgba(237,232,219,0.6)', fontSize:11, fontWeight:700, cursor:'pointer', padding:'7px 10px', borderRadius:8, whiteSpace:'nowrap'}}>
+                  {filtresOuverts ? '▼' : '▶'} Filtres
+                </button>
+              </div>
+
+              {filtresOuverts && (
+                <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginTop:12, paddingTop:12, borderTop:'1px solid rgba(255,255,255,0.05)'}}>
+                  {sourceConfig.supportsDates && (
+                    <div>
+                      <label style={{fontSize:9, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:3, textTransform:'uppercase', letterSpacing:'0.08em', fontWeight:700}}>Période</label>
+                      <div style={{display:'flex', gap:6, alignItems:'center'}}>
+                        <input type="number" value={dateDebut} onChange={e=>setDateDebut(e.target.value)} min="1800" max="2025"
+                          style={{flex:1, padding:'6px 8px', borderRadius:6, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}/>
+                        <span style={{fontSize:10, color:'rgba(237,232,219,0.3)'}}>→</span>
+                        <input type="number" value={dateFin} onChange={e=>setDateFin(e.target.value)} min="1800" max="2025"
+                          style={{flex:1, padding:'6px 8px', borderRadius:6, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}/>
+                      </div>
+                    </div>
+                  )}
+                  {sourceConfig.supportsTypeDoc && (
+                    <div>
+                      <label style={{fontSize:9, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:3, textTransform:'uppercase', letterSpacing:'0.08em', fontWeight:700}}>Type de document</label>
+                      <select value={typeDoc} onChange={e=>setTypeDoc(e.target.value)}
+                        style={{width:'100%', padding:'6px 8px', borderRadius:6, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}>
+                        {sourceConfig.typeDocOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  {sourceConfig.supportsLang && (
+                    <div>
+                      <label style={{fontSize:9, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:3, textTransform:'uppercase', letterSpacing:'0.08em', fontWeight:700}}>Langue</label>
+                      <select value={lang} onChange={e=>setLang(e.target.value)}
+                        style={{width:'100%', padding:'6px 8px', borderRadius:6, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}>
+                        {LANGUES_WIKI.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  {sourceConfig.supportsTendance && (
+                    <div>
+                      <label style={{fontSize:9, color:'rgba(237,232,219,0.4)', display:'block', marginBottom:3, textTransform:'uppercase', letterSpacing:'0.08em', fontWeight:700}}>Tendance politique</label>
+                      <div style={{display:'flex', gap:4, flexWrap:'wrap'}}>
+                        {['Gauche','Centre','Droite'].map(t => (
+                          <button key={t} onClick={()=>setTendances(prev=>prev.includes(t)?prev.filter(x=>x!==t):[...prev,t])}
+                            style={{padding:'4px 9px', borderRadius:12, border:`1px solid ${tendances.includes(t)?project.color:'rgba(255,255,255,0.1)'}`, background:tendances.includes(t)?`${project.color}20`:'transparent', color:tendances.includes(t)?project.color:'rgba(237,232,219,0.5)', fontSize:10, fontWeight:700, cursor:'pointer'}}>{t}</button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {!sourceConfig.supportsDates && !sourceConfig.supportsTypeDoc && !sourceConfig.supportsLang && !sourceConfig.supportsTendance && (
+                    <div style={{gridColumn:'1 / -1', padding:12, textAlign:'center'}}>
+                      <p style={{fontSize:11, color:'rgba(237,232,219,0.4)', margin:0}}>Pas de filtres avancés pour cette source.</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          )}
 
-          {!loading && results.length > 0 && !hasMore && (
-            <div style={{padding:'14px 0', textAlign:'center', flexShrink:0}}>
-              <p style={{fontSize:11, color:'rgba(237,232,219,0.3)', margin:0, fontStyle:'italic'}}>
-                — Fin des résultats ({totalHits.toLocaleString('fr-FR')} affichés) —
+            {error && (
+              <div style={{background:'rgba(199,91,78,0.1)', border:'1px solid rgba(199,91,78,0.3)', borderRadius:8, padding:'8px 12px', flexShrink:0, display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                <p style={{fontSize:11, color:'#C75B4E', margin:0}}>⚠️ {error}</p>
+                <button onClick={()=>setError(null)} style={{background:'transparent', border:'none', color:'#C75B4E', cursor:'pointer', fontSize:14, padding:0}}>✕</button>
+              </div>
+            )}
+
+            <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0, padding:'0 4px'}}>
+              <p style={{fontSize:10, fontWeight:700, color:'rgba(237,232,219,0.4)', textTransform:'uppercase', letterSpacing:'0.08em', margin:0}}>
+                {searched
+                  ? `${sourceConfig.label} — ${results.length} affichés sur ${totalHits.toLocaleString('fr-FR')} trouvés`
+                  : `Lance une recherche dans ${sourceConfig.label}`}
+              </p>
+              {searched && results.length>0 && (
+                <p style={{fontSize:10, color:'rgba(91,199,138,0.7)', margin:0}}>
+                  {hasMore ? `📄 Page ${currentPage}` : '✅ Tous affichés'}
+                </p>
+              )}
+            </div>
+
+            <div style={{display:'flex', flexDirection:'column', gap:8, overflowY:'auto', paddingRight:6, flex:'1 1 auto', minHeight:0,
+              scrollbarWidth:'thin', scrollbarColor:`${project.color}60 rgba(255,255,255,0.05)`}}>
+
+              {loading && (
+                <div style={{padding:40, textAlign:'center', color:'rgba(237,232,219,0.5)'}}>
+                  <p style={{fontSize:28, margin:'0 0 8px'}}>⏳</p>
+                  <p style={{fontSize:13, margin:0}}>Recherche dans {sourceConfig.label}…</p>
+                </div>
+              )}
+
+              {!loading && !searched && (
+                <div style={{padding:60, textAlign:'center', color:'rgba(237,232,219,0.3)'}}>
+                  <p style={{fontSize:40, margin:'0 0 12px'}}>{sourceConfig.icon}</p>
+                  <p style={{fontSize:14, margin:'0 0 6px', fontWeight:700}}>Aucune recherche dans {sourceConfig.label}</p>
+                  <p style={{fontSize:11, margin:0, lineHeight:1.5}}>{sourceConfig.description}</p>
+                </div>
+              )}
+
+              {!loading && searched && results.length===0 && !error && (
+                <div style={{padding:40, textAlign:'center', color:'rgba(237,232,219,0.4)'}}>
+                  <p style={{fontSize:28, margin:'0 0 8px'}}>🔎</p>
+                  <p style={{fontSize:13, margin:0}}>Aucun résultat pour "{query}"</p>
+                  <p style={{fontSize:11, margin:'4px 0 0', color:'rgba(237,232,219,0.3)'}}>Essaie avec d'autres mots-clés</p>
+                </div>
+              )}
+
+              {!loading && results.map((r, idx) => {
+                let borderColor = sourceConfig.color
+                let tendanceLabel = null
+                if (r.source === 'gallica') {
+                  const journalDetecte = Object.keys(TENDANCES).find(j =>
+                    (r.titre || '').includes(j) || (r.editeur || '').includes(j)
+                  )
+                  if (journalDetecte) {
+                    const t = tendancePour(journalDetecte)
+                    borderColor = t.couleur
+                    tendanceLabel = t.label
+                  }
+                }
+                const isFav = estFavori(r.id)
+                const canOcr = r.source === 'gallica' && r.type_doc && r.type_doc.toLowerCase().includes('monograph')
+
+                return (
+                  <div key={`${r.id}_${idx}`}
+                    style={{background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'12px 14px', borderLeft:`4px solid ${borderColor}`, display:'flex', gap:12, flexShrink:0}}>
+
+                    {r.thumbnail && (
+                      <img src={r.thumbnail} alt=""
+                        style={{width:56, height:74, objectFit:'cover', borderRadius:5, flexShrink:0, background:'rgba(0,0,0,0.3)'}}
+                        onError={e=>{e.target.style.display='none'}}/>
+                    )}
+
+                    <div style={{flex:1, minWidth:0}}>
+                      <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:5, gap:10}}>
+                        <h4 style={{fontSize:13, fontWeight:700, color:'#EDE8DB', margin:0, lineHeight:1.4, flex:1}}>
+                          <span style={{color:'rgba(237,232,219,0.3)', fontSize:10, marginRight:6}}>#{idx+1}</span>
+                          {r.titre}
+                        </h4>
+                        <button onClick={()=>toggleFavori(r)}
+                          title={isFav ? 'Retirer des favoris' : 'Ajouter aux favoris'}
+                          style={{background:'transparent', border:'none', color:isFav ? '#D4A853' : 'rgba(237,232,219,0.3)', fontSize:18, cursor:'pointer', padding:0, lineHeight:1, transition:'color 0.2s'}}>
+                          {isFav ? '★' : '☆'}
+                        </button>
+                      </div>
+
+                      <div style={{display:'flex', alignItems:'center', gap:6, marginBottom:6, fontSize:10, flexWrap:'wrap'}}>
+                        {r.auteur && (<><span style={{color:'rgba(237,232,219,0.7)', fontWeight:700}}>{r.auteur}</span><span style={{color:'rgba(237,232,219,0.3)'}}>·</span></>)}
+                        {r.date && (<><span style={{color:'rgba(237,232,219,0.5)'}}>{r.date}</span><span style={{color:'rgba(237,232,219,0.3)'}}>·</span></>)}
+                        {r.editeur && (<><span style={{color:'rgba(237,232,219,0.5)'}}>{r.editeur}</span></>)}
+                        {r.type_doc && <span style={{fontSize:9, color:'rgba(237,232,219,0.4)', background:'rgba(255,255,255,0.04)', padding:'1px 6px', borderRadius:5}}>{r.type_doc}</span>}
+                        {r.ocr_quality != null && (
+                          <span style={{fontSize:9, color:r.ocr_quality>80 ? '#5BC78A' : r.ocr_quality>60 ? '#D4A853' : '#C75B4E', background:'rgba(255,255,255,0.04)', padding:'1px 6px', borderRadius:5}}>
+                            OCR {Math.round(r.ocr_quality)}%
+                          </span>
+                        )}
+                        {r.open_access === true && (
+                          <span style={{fontSize:9, color:'#5BC78A', background:'rgba(91,199,138,0.1)', padding:'1px 6px', borderRadius:5, fontWeight:700}}>🔓 Open Access</span>
+                        )}
+                        {r.open_access === false && (
+                          <span style={{fontSize:9, color:'rgba(237,232,219,0.5)', background:'rgba(255,255,255,0.04)', padding:'1px 6px', borderRadius:5}}>🔒 Payant</span>
+                        )}
+                        {r.is_borrowable === true && (
+                          <span style={{fontSize:9, color:'#D4A853', background:'rgba(212,168,83,0.1)', padding:'1px 6px', borderRadius:5, fontWeight:700}}>🔒 Emprunt</span>
+                        )}
+                        {r.is_borrowable === false && (
+                          <span style={{fontSize:9, color:'#5BC78A', background:'rgba(91,199,138,0.1)', padding:'1px 6px', borderRadius:5, fontWeight:700}}>🔓 Libre</span>
+                        )}
+                        {r.doi && (
+                          <span style={{fontSize:9, color:'rgba(237,232,219,0.4)', background:'rgba(255,255,255,0.04)', padding:'1px 6px', borderRadius:5, fontFamily:'monospace'}}>DOI:{r.doi.slice(0,18)}...</span>
+                        )}
+                        {tendanceLabel && (
+                          <span style={{fontSize:9, color:borderColor, background:'rgba(255,255,255,0.04)', padding:'1px 6px', borderRadius:5}}>{tendanceLabel}</span>
+                        )}
+                      </div>
+
+                      {r.snippet && (
+                        <p style={{fontSize:11, color:'rgba(237,232,219,0.6)', lineHeight:1.5, margin:'0 0 8px'}}>{r.snippet}</p>
+                      )}
+
+                      <div style={{display:'flex', gap:5, flexWrap:'wrap'}}>
+                        <a href={r.url_gallica} target="_blank" rel="noopener noreferrer"
+                          style={{padding:'4px 9px', borderRadius:6, border:`1px solid ${project.color}40`, background:`${project.color}10`, color:project.color, fontSize:10, fontWeight:700, cursor:'pointer', textDecoration:'none'}}>
+                          📖 {r.source === 'gallica' ? 'Lire sur Gallica' : r.source === 'wikipedia' ? 'Lire sur Wikipedia' : r.source === 'archive' ? 'Voir sur Archive' : 'Ouvrir le papier'}
+                        </a>
+                        {r.pdf_url && r.pdf_url !== r.url_gallica && (
+                          <a href={r.pdf_url} target="_blank" rel="noopener noreferrer"
+                            style={{padding:'4px 9px', borderRadius:6, border:'1px solid rgba(91,199,138,0.4)', background:'rgba(91,199,138,0.1)', color:'#5BC78A', fontSize:10, fontWeight:700, cursor:'pointer', textDecoration:'none'}}>
+                            📄 PDF
+                          </a>
+                        )}
+                        <button onClick={()=>handleDownload(r)} disabled={downloadStatus[r.id]==='loading' || downloadStatus[r.id]==='ok'} style={getDownloadButtonStyle(r.id)}>
+                          {getDownloadButtonLabel(r.id)}
+                        </button>
+                        {canOcr && (
+                          <button onClick={()=>handleStartOcr(r)}
+                            style={{padding:'4px 9px', borderRadius:6, border:'1px solid rgba(212,168,83,0.4)', background:'rgba(212,168,83,0.1)', color:'#D4A853', fontSize:10, fontWeight:700, cursor:'pointer'}}>
+                            🔬 OCR Tesseract
+                          </button>
+                        )}
+                        <button onClick={()=>navigator.clipboard.writeText(`${r.titre} — ${r.auteur || 'Anonyme'} (${r.date || 'n.d.'}). ${r.url_gallica}`)}
+                          style={{padding:'4px 9px', borderRadius:6, border:'1px solid rgba(255,255,255,0.1)', background:'transparent', color:'rgba(237,232,219,0.5)', fontSize:10, cursor:'pointer'}}>
+                          📋 Copier
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+
+              {!loading && results.length > 0 && hasMore && (
+                <div style={{padding:'12px 0', display:'flex', justifyContent:'center', flexShrink:0}}>
+                  <button onClick={handleLoadMore} disabled={loadingMore}
+                    style={{padding:'12px 28px', borderRadius:10, border:`1px solid ${sourceConfig.color}60`, background:loadingMore ? `${sourceConfig.color}20` : `${sourceConfig.color}15`, color:sourceConfig.color, fontSize:12, fontWeight:800, cursor:loadingMore ? 'wait' : 'pointer', transition:'all 0.2s ease', display:'flex', alignItems:'center', gap:8}}>
+                    {loadingMore ? '⏳ Chargement…' : `↓ Charger 50 résultats de plus (${results.length} / ${totalHits.toLocaleString('fr-FR')})`}
+                  </button>
+                </div>
+              )}
+
+              {!loading && results.length > 0 && !hasMore && (
+                <div style={{padding:'14px 0', textAlign:'center', flexShrink:0}}>
+                  <p style={{fontSize:11, color:'rgba(237,232,219,0.3)', margin:0, fontStyle:'italic'}}>
+                    — Fin des résultats ({totalHits.toLocaleString('fr-FR')} affichés) —
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ═════ COLONNE DROITE : FAVORIS + JOBS OCR ═════ */}
+          <div style={{width:280, display:'flex', flexDirection:'column', gap:10, flexShrink:0, overflow:'hidden'}}>
+
+            {jobsActifs.length > 0 && (
+              <div style={{background:'rgba(212,168,83,0.08)', border:'1px solid rgba(212,168,83,0.3)', borderRadius:10, padding:'10px 12px', flexShrink:0}}>
+                <h3 style={{fontSize:10, fontWeight:700, color:'#D4A853', textTransform:'uppercase', letterSpacing:'0.08em', margin:'0 0 8px'}}>
+                  🔬 OCR en cours ({jobsActifs.length})
+                </h3>
+                {jobsActifs.map(j => (
+                  <div key={j.job_id} style={{marginBottom:8, paddingBottom:6, borderBottom:'1px solid rgba(212,168,83,0.15)'}}>
+                    <p style={{fontSize:10, color:'#EDE8DB', margin:'0 0 3px', fontWeight:700, lineHeight:1.3}}>
+                      {j.document_titre.length > 40 ? j.document_titre.slice(0,40) + '…' : j.document_titre}
+                    </p>
+                    <div style={{height:6, background:'rgba(0,0,0,0.3)', borderRadius:3, overflow:'hidden', marginBottom:3}}>
+                      <div style={{height:'100%', width:`${j.progress || 0}%`, background:'#D4A853', transition:'width 0.3s'}}/>
+                    </div>
+                    <p style={{fontSize:9, color:'rgba(237,232,219,0.6)', margin:0}}>
+                      {j.pages_done || 0} / {j.total_pages} pages · {j.progress || 0}%
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {jobsDone.length > 0 && (
+              <div style={{background:'rgba(91,199,138,0.05)', border:'1px solid rgba(91,199,138,0.2)', borderRadius:10, padding:'10px 12px', flexShrink:0, maxHeight:200, overflowY:'auto'}}>
+                <h3 style={{fontSize:10, fontWeight:700, color:'#5BC78A', textTransform:'uppercase', letterSpacing:'0.08em', margin:'0 0 8px'}}>
+                  ✅ OCR terminés ({jobsDone.length})
+                </h3>
+                {jobsDone.map(j => {
+                  const surlignagesCount = surlignagesDocument(j.document_id).length
+                  return (
+                    <div key={j.job_id} style={{marginBottom:8, paddingBottom:8, borderBottom:'1px solid rgba(91,199,138,0.15)'}}>
+                      <p style={{fontSize:10, color:'#EDE8DB', margin:'0 0 4px', fontWeight:700, lineHeight:1.3}}>
+                        {j.document_titre.length > 35 ? j.document_titre.slice(0,35) + '…' : j.document_titre}
+                      </p>
+                      <p style={{fontSize:9, color:'rgba(237,232,219,0.5)', margin:'0 0 5px'}}>
+                        {j.pages_done} pages · {Math.round((j.bytes_total || 0)/1024)} Ko
+                      </p>
+                      <div style={{display:'flex', gap:4, flexWrap:'wrap'}}>
+                        {j.r2_key && (
+                          <button onClick={()=>ouvrirLecteur({
+                              titre: j.document_titre,
+                              source: 'gallica',
+                              r2_key: j.r2_key,
+                              document_id: j.document_id,
+                              theme: j.theme || null,
+                              auteur: null,
+                              date: null
+                            })}
+                            style={{fontSize:9, padding:'3px 7px', borderRadius:5, border:'none', background:'#5BC78A', color:'#0D1B2A', fontWeight:700, cursor:'pointer'}}>
+                            📖 Lire
+                            {surlignagesCount > 0 && <span style={{marginLeft:4, opacity:0.7}}>({surlignagesCount})</span>}
+                          </button>
+                        )}
+                        <button onClick={()=>{
+                            if(confirm('Retirer ce job de la liste ? Le texte reste dans R2.')) {
+                              const newJobs = ocrJobs.filter(job => job.job_id !== j.job_id)
+                              setOcrJobs(newJobs)
+                              sauverStorage(OCR_JOBS_STORAGE_KEY, newJobs)
+                            }
+                          }}
+                          style={{fontSize:9, padding:'3px 6px', borderRadius:5, border:'1px solid rgba(255,255,255,0.1)', background:'transparent', color:'rgba(237,232,219,0.5)', cursor:'pointer'}}>
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0}}>
+              <h3 style={{fontSize:10, fontWeight:700, color:'rgba(237,232,219,0.4)', textTransform:'uppercase', letterSpacing:'0.08em', margin:0}}>
+                ⭐ Favoris {project?.id || 'general'} ({favorisProjet.length})
+              </h3>
+              {favoris.length > favorisProjet.length && (
+                <span style={{fontSize:9, color:'rgba(237,232,219,0.3)'}}>+{favoris.length - favorisProjet.length} autres</span>
+              )}
+            </div>
+
+            <div style={{flex:'1 1 auto', minHeight:0, overflowY:'auto', display:'flex', flexDirection:'column', gap:6, paddingRight:4,
+              scrollbarWidth:'thin', scrollbarColor:`${project.color}40 transparent`}}>
+
+              {favorisProjet.length === 0 ? (
+                <div style={{padding:'20px 12px', textAlign:'center', color:'rgba(237,232,219,0.3)', background:'rgba(255,255,255,0.02)', borderRadius:8, border:'1px dashed rgba(255,255,255,0.08)'}}>
+                  <p style={{fontSize:20, margin:'0 0 6px'}}>⭐</p>
+                  <p style={{fontSize:11, margin:'0 0 3px', fontWeight:700}}>Aucun favori</p>
+                  <p style={{fontSize:9, margin:0, lineHeight:1.5}}>Clique sur ☆ d'un résultat pour l'ajouter</p>
+                </div>
+              ) : (
+                favorisProjet.map(f => {
+                  const sourceConfigFav = SOURCES.find(s => s.id === f.source) || SOURCES[0]
+                  let borderColor = sourceConfigFav.color
+                  if (f.source === 'gallica') {
+                    const journalDetecte = Object.keys(TENDANCES).find(j =>
+                      (f.titre || '').includes(j) || (f.editeur || '').includes(j)
+                    )
+                    if (journalDetecte) borderColor = tendancePour(journalDetecte).couleur
+                  }
+
+                  const ocrJob = ocrJobs.find(j => j.document_id === f.id && j.status === 'done')
+                  const r2Key = f.r2_key || (ocrJob ? ocrJob.r2_key : null)
+                  const surlignagesCount = surlignagesDocument(f.id).length
+
+                  return (
+                    <div key={f.id}
+                      style={{background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:8, padding:'8px 10px', borderLeft:`3px solid ${borderColor}`, flexShrink:0, position:'relative'}}>
+                      <button onClick={()=>supprimerFavori(f.id)} title="Retirer des favoris"
+                        style={{position:'absolute', top:6, right:6, background:'transparent', border:'none', color:'rgba(237,232,219,0.3)', fontSize:11, cursor:'pointer', padding:'2px 4px', lineHeight:1}}>✕</button>
+                      <p style={{fontSize:11, fontWeight:700, color:'#EDE8DB', margin:'0 0 3px', lineHeight:1.4, paddingRight:16}}>{f.titre}</p>
+                      <p style={{fontSize:9, color:'rgba(237,232,219,0.4)', margin:'0 0 4px'}}>
+                        <span style={{color:sourceConfigFav.color, fontWeight:700}}>{sourceConfigFav.icon} {sourceConfigFav.label}</span>
+                        {f.auteur && <span> · {f.auteur.length > 20 ? f.auteur.slice(0,20)+'…' : f.auteur}</span>}
+                        {f.date && <span> · {f.date}</span>}
+                      </p>
+                      {f.theme && (
+                        <p style={{fontSize:8, color:`${project.color}cc`, margin:'0 0 4px', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.05em'}}>#{f.theme}</p>
+                      )}
+                      <div style={{display:'flex', gap:4, flexWrap:'wrap'}}>
+                        {r2Key && (
+                          <button onClick={()=>ouvrirLecteur({
+                              titre:f.titre, source:f.source, r2_key:r2Key,
+                              document_id:f.id, theme:f.theme, auteur:f.auteur, date:f.date
+                            })}
+                            style={{fontSize:9, padding:'3px 7px', borderRadius:5, border:'none', background:project.color, color:'#0D1B2A', fontWeight:700, cursor:'pointer'}}>
+                            📖 Lire
+                            {surlignagesCount > 0 && <span style={{marginLeft:4, opacity:0.7}}>({surlignagesCount})</span>}
+                          </button>
+                        )}
+                        <a href={f.url_gallica} target="_blank" rel="noopener noreferrer"
+                          style={{fontSize:9, color:'rgba(237,232,219,0.5)', textDecoration:'none', padding:'3px 6px'}}>
+                          ↗ Source
+                        </a>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+
+            <div style={{height:1, background:'rgba(255,255,255,0.06)', flexShrink:0}}/>
+
+            <p style={{fontSize:9, fontWeight:700, color:'rgba(237,232,219,0.3)', textTransform:'uppercase', letterSpacing:'0.08em', margin:0, flexShrink:0}}>Actions</p>
+
+            <button disabled style={{padding:'9px 11px', borderRadius:8, border:'none', background:`${project.color}30`, color:project.color, fontSize:11, fontWeight:700, cursor:'not-allowed', textAlign:'left', flexShrink:0}}>
+              ✨ Générer rapport IA
+            </button>
+            <button disabled style={{padding:'9px 11px', borderRadius:8, border:'1px solid rgba(255,255,255,0.1)', background:'rgba(255,255,255,0.03)', color:'rgba(237,232,219,0.4)', fontSize:11, fontWeight:700, cursor:'not-allowed', textAlign:'left', flexShrink:0}}>
+              📄 Exporter Markdown
+            </button>
+
+            <div style={{padding:'9px 11px', background:'rgba(91,199,138,0.08)', border:'1px solid rgba(91,199,138,0.2)', borderRadius:8, flexShrink:0}}>
+              <p style={{fontSize:10, fontWeight:700, color:'#5BC78A', margin:'0 0 4px'}}>✅ V5 Biblio</p>
+              <p style={{fontSize:9, color:'rgba(237,232,219,0.5)', margin:0, lineHeight:1.5}}>
+                4 sources + OCR + lecteur + surligneur + Bibliothèque R2 globale.
               </p>
             </div>
-          )}
-        </div>
-      </div>
-
-      {/* ═════ COLONNE DROITE : FAVORIS + JOBS OCR ═════ */}
-      <div style={{width:280, display:'flex', flexDirection:'column', gap:10, flexShrink:0, overflow:'hidden'}}>
-
-        {/* SECTION OCR JOBS ACTIFS (si y'en a) */}
-        {jobsActifs.length > 0 && (
-          <div style={{background:'rgba(212,168,83,0.08)', border:'1px solid rgba(212,168,83,0.3)', borderRadius:10, padding:'10px 12px', flexShrink:0}}>
-            <h3 style={{fontSize:10, fontWeight:700, color:'#D4A853', textTransform:'uppercase', letterSpacing:'0.08em', margin:'0 0 8px'}}>
-              🔬 OCR en cours ({jobsActifs.length})
-            </h3>
-            {jobsActifs.map(j => (
-              <div key={j.job_id} style={{marginBottom:8, paddingBottom:6, borderBottom:'1px solid rgba(212,168,83,0.15)'}}>
-                <p style={{fontSize:10, color:'#EDE8DB', margin:'0 0 3px', fontWeight:700, lineHeight:1.3}}>
-                  {j.document_titre.length > 40 ? j.document_titre.slice(0,40) + '…' : j.document_titre}
-                </p>
-                <div style={{height:6, background:'rgba(0,0,0,0.3)', borderRadius:3, overflow:'hidden', marginBottom:3}}>
-                  <div style={{height:'100%', width:`${j.progress || 0}%`, background:'#D4A853', transition:'width 0.3s'}}/>
-                </div>
-                <p style={{fontSize:9, color:'rgba(237,232,219,0.6)', margin:0}}>
-                  {j.pages_done || 0} / {j.total_pages} pages · {j.progress || 0}%
-                </p>
-              </div>
-            ))}
           </div>
-        )}
+        </div>
+      )}
 
-        {/* SECTION OCR TERMINÉS */}
-        {jobsDone.length > 0 && (
-          <div style={{background:'rgba(91,199,138,0.05)', border:'1px solid rgba(91,199,138,0.2)', borderRadius:10, padding:'10px 12px', flexShrink:0, maxHeight:200, overflowY:'auto'}}>
-            <h3 style={{fontSize:10, fontWeight:700, color:'#5BC78A', textTransform:'uppercase', letterSpacing:'0.08em', margin:'0 0 8px'}}>
-              ✅ OCR terminés ({jobsDone.length})
-            </h3>
-            {jobsDone.map(j => {
-              const surlignagesCount = surlignagesDocument(j.document_id).length
+      {/* ═════ VUE BIBLIOTHEQUE GLOBALE ═════ */}
+      {vueActive === 'biblio' && (
+        <div style={{flex:1, display:'flex', flexDirection:'column', gap:12, overflow:'hidden', minWidth:0}}>
+
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0, gap:14}}>
+            <div>
+              <h2 style={{fontSize:15, fontWeight:700, color:'#EDE8DB', margin:'0 0 3px'}}>📚 Bibliothèque globale R2</h2>
+              <p style={{fontSize:11, color:'rgba(237,232,219,0.5)', margin:0}}>
+                Tous les documents archivés, tous projets confondus
+                {!apiKey && <span style={{color:'#C75B4E', marginLeft:8, fontWeight:700}}>⚠️ Clé Doppler manquante</span>}
+              </p>
+            </div>
+            <button onClick={chargerBibliotheque} disabled={biblioLoading || !apiKey}
+              style={{padding:'8px 14px', borderRadius:8, border:`1px solid ${project.color}40`, background:`${project.color}15`, color:project.color, fontSize:11, fontWeight:700, cursor:biblioLoading?'wait':'pointer', whiteSpace:'nowrap'}}>
+              {biblioLoading ? '⏳ Chargement…' : '↻ Rafraîchir'}
+            </button>
+          </div>
+
+          <div style={{background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:'12px 14px', flexShrink:0}}>
+            <input
+              value={biblioSearch} onChange={e=>setBiblioSearch(e.target.value)}
+              placeholder="🔎 Rechercher dans les titres, auteurs, chemins…"
+              style={{width:'100%', padding:'10px 14px', borderRadius:10, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:13, outline:'none', boxSizing:'border-box', marginBottom:10}}
+            />
+            <div style={{display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:8, marginBottom:8}}>
+              <select value={biblioFiltreProjet} onChange={e=>setBiblioFiltreProjet(e.target.value)}
+                style={{padding:'7px 10px', borderRadius:8, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}>
+                <option value="">Tous les projets ({projetsUniques.length})</option>
+                {projetsUniques.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <select value={biblioFiltreTheme} onChange={e=>setBiblioFiltreTheme(e.target.value)}
+                style={{padding:'7px 10px', borderRadius:8, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}>
+                <option value="">Tous les thèmes ({themesUniques.length})</option>
+                {themesUniques.map(t => <option key={t} value={t}>#{t}</option>)}
+              </select>
+              <select value={biblioFiltreSource} onChange={e=>setBiblioFiltreSource(e.target.value)}
+                style={{padding:'7px 10px', borderRadius:8, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}>
+                <option value="">Toutes les sources</option>
+                {sourcesUniques.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr auto', gap:8}}>
+              <select value={biblioFiltreType} onChange={e=>setBiblioFiltreType(e.target.value)}
+                style={{padding:'7px 10px', borderRadius:8, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}>
+                {TYPES_FICHIERS_BIBLIO.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+              <input type="date" value={biblioFiltreDateMin} onChange={e=>setBiblioFiltreDateMin(e.target.value)}
+                title="Date min"
+                style={{padding:'7px 10px', borderRadius:8, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}/>
+              <input type="date" value={biblioFiltreDateMax} onChange={e=>setBiblioFiltreDateMax(e.target.value)}
+                title="Date max"
+                style={{padding:'7px 10px', borderRadius:8, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:11, outline:'none'}}/>
+              <button onClick={resetFiltresBiblio}
+                style={{padding:'7px 12px', borderRadius:8, border:'1px solid rgba(255,255,255,0.1)', background:'transparent', color:'rgba(237,232,219,0.6)', fontSize:11, fontWeight:700, cursor:'pointer', whiteSpace:'nowrap'}}>
+                ✕ Reset
+              </button>
+            </div>
+          </div>
+
+          {biblioError && (
+            <div style={{background:'rgba(199,91,78,0.1)', border:'1px solid rgba(199,91,78,0.3)', borderRadius:8, padding:'8px 12px', flexShrink:0, display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+              <p style={{fontSize:11, color:'#C75B4E', margin:0}}>⚠️ {biblioError}</p>
+              <button onClick={()=>setBiblioError(null)} style={{background:'transparent', border:'none', color:'#C75B4E', cursor:'pointer', fontSize:14, padding:0}}>✕</button>
+            </div>
+          )}
+
+          <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0, padding:'0 4px'}}>
+            <p style={{fontSize:10, fontWeight:700, color:'rgba(237,232,219,0.4)', textTransform:'uppercase', letterSpacing:'0.08em', margin:0}}>
+              {biblioLoading ? 'Chargement de la bibliothèque…' :
+                `${biblioGroupes.length} documents — ${biblioFichiersFiltres.length} fichiers sur ${biblioFichiers.length}`}
+            </p>
+          </div>
+
+          <div style={{display:'flex', flexDirection:'column', gap:8, overflowY:'auto', paddingRight:6, flex:'1 1 auto', minHeight:0,
+            scrollbarWidth:'thin', scrollbarColor:`${project.color}60 rgba(255,255,255,0.05)`}}>
+
+            {biblioLoading && biblioFichiers.length === 0 && (
+              <div style={{padding:60, textAlign:'center', color:'rgba(237,232,219,0.5)'}}>
+                <p style={{fontSize:40, margin:'0 0 12px'}}>⏳</p>
+                <p style={{fontSize:13, margin:0}}>Chargement depuis Cloudflare R2…</p>
+              </div>
+            )}
+
+            {!biblioLoading && biblioFichiers.length === 0 && !biblioError && (
+              <div style={{padding:60, textAlign:'center', color:'rgba(237,232,219,0.3)'}}>
+                <p style={{fontSize:40, margin:'0 0 12px'}}>📚</p>
+                <p style={{fontSize:14, margin:'0 0 6px', fontWeight:700}}>Bibliothèque vide</p>
+                <p style={{fontSize:11, margin:0, lineHeight:1.5}}>Télécharge des documents depuis l'onglet Recherche</p>
+              </div>
+            )}
+
+            {!biblioLoading && biblioFichiers.length > 0 && biblioGroupes.length === 0 && (
+              <div style={{padding:40, textAlign:'center', color:'rgba(237,232,219,0.4)'}}>
+                <p style={{fontSize:28, margin:'0 0 8px'}}>🔎</p>
+                <p style={{fontSize:13, margin:0}}>Aucun résultat avec ces filtres</p>
+                <button onClick={resetFiltresBiblio} style={{marginTop:10, padding:'6px 14px', borderRadius:8, border:`1px solid ${project.color}40`, background:'transparent', color:project.color, fontSize:11, fontWeight:700, cursor:'pointer'}}>
+                  Réinitialiser les filtres
+                </button>
+              </div>
+            )}
+
+            {biblioGroupes.map((g, idx) => {
+              const meta = g.meta || {}
+              const sourceConfigGr = SOURCES.find(s => s.id === meta.source) || SOURCES[0]
+              const borderColor = sourceConfigGr.color
               return (
-                <div key={j.job_id} style={{marginBottom:8, paddingBottom:8, borderBottom:'1px solid rgba(91,199,138,0.15)'}}>
-                  <p style={{fontSize:10, color:'#EDE8DB', margin:'0 0 4px', fontWeight:700, lineHeight:1.3}}>
-                    {j.document_titre.length > 35 ? j.document_titre.slice(0,35) + '…' : j.document_titre}
-                  </p>
-                  <p style={{fontSize:9, color:'rgba(237,232,219,0.5)', margin:'0 0 5px'}}>
-                    {j.pages_done} pages · {Math.round((j.bytes_total || 0)/1024)} Ko
-                  </p>
-                  <div style={{display:'flex', gap:4, flexWrap:'wrap'}}>
-                    {j.r2_key && (
-                      <button onClick={()=>ouvrirLecteur({
-                          titre: j.document_titre,
-                          source: 'gallica',
-                          r2_key: j.r2_key,
-                          document_id: j.document_id,
-                          theme: j.theme || null,
-                          auteur: null,
-                          date: null
-                        })}
-                        style={{fontSize:9, padding:'3px 7px', borderRadius:5, border:'none', background:'#5BC78A', color:'#0D1B2A', fontWeight:700, cursor:'pointer'}}>
-                        📖 Lire
-                        {surlignagesCount > 0 && <span style={{marginLeft:4, opacity:0.7}}>({surlignagesCount})</span>}
-                      </button>
-                    )}
-                    <button onClick={()=>{
-                        if(confirm('Retirer ce job de la liste ? Le texte reste dans R2.')) {
-                          const newJobs = ocrJobs.filter(job => job.job_id !== j.job_id)
-                          setOcrJobs(newJobs)
-                          sauverStorage(OCR_JOBS_STORAGE_KEY, newJobs)
-                        }
-                      }}
-                      style={{fontSize:9, padding:'3px 6px', borderRadius:5, border:'1px solid rgba(255,255,255,0.1)', background:'transparent', color:'rgba(237,232,219,0.5)', cursor:'pointer'}}>
-                      ✕
-                    </button>
+                <div key={g.docKey + '_' + idx}
+                  style={{background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:10, padding:'12px 14px', borderLeft:`4px solid ${borderColor}`, flexShrink:0}}>
+
+                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:6, gap:10}}>
+                    <div style={{flex:1, minWidth:0}}>
+                      <h4 style={{fontSize:13, fontWeight:700, color:'#EDE8DB', margin:'0 0 4px', lineHeight:1.4}}>
+                        <span style={{color:'rgba(237,232,219,0.3)', fontSize:10, marginRight:6}}>#{idx+1}</span>
+                        {meta.titre || g.docKey.split('/').pop() || g.docKey}
+                      </h4>
+                      <div style={{display:'flex', alignItems:'center', gap:6, fontSize:10, flexWrap:'wrap'}}>
+                        <span style={{color:sourceConfigGr.color, fontWeight:700}}>{sourceConfigGr.icon} {sourceConfigGr.label}</span>
+                        {meta.auteur && (<><span style={{color:'rgba(237,232,219,0.3)'}}>·</span><span style={{color:'rgba(237,232,219,0.6)'}}>{meta.auteur}</span></>)}
+                        {meta.date && (<><span style={{color:'rgba(237,232,219,0.3)'}}>·</span><span style={{color:'rgba(237,232,219,0.5)'}}>{meta.date}</span></>)}
+                        {g.projet_id && <span style={{fontSize:9, color:project.color, background:`${project.color}15`, padding:'1px 6px', borderRadius:5, fontWeight:700}}>📁 {g.projet_id}</span>}
+                        {g.theme && <span style={{fontSize:9, color:'#D4A853', background:'rgba(212,168,83,0.1)', padding:'1px 6px', borderRadius:5, fontWeight:700}}>#{g.theme}</span>}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{display:'flex', flexDirection:'column', gap:4, marginTop:8}}>
+                    {g.fichiers.map(f => {
+                      const type = detectTypeFichier(f.key, f.content_type)
+                      const fileName = f.key.split('/').pop()
+                      const menuOuvert = biblioMenuOuvert === f.key
+                      return (
+                        <div key={f.key} style={{display:'flex', alignItems:'center', gap:8, padding:'6px 10px', background:'rgba(255,255,255,0.02)', borderRadius:6, fontSize:11, position:'relative'}}>
+                          <span style={{fontSize:14}}>{iconePourType(type)}</span>
+                          <span style={{flex:1, color:'rgba(237,232,219,0.8)', fontFamily:'monospace', fontSize:10, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{fileName}</span>
+                          <span style={{color:'rgba(237,232,219,0.4)', fontSize:9, whiteSpace:'nowrap'}}>{formatTaille(f.size)}</span>
+                          <span style={{color:'rgba(237,232,219,0.4)', fontSize:9, whiteSpace:'nowrap'}}>{formatDateBiblio(f.last_modified)}</span>
+                          <button onClick={()=>setBiblioMenuOuvert(menuOuvert ? null : f.key)}
+                            style={{padding:'3px 8px', borderRadius:5, border:'1px solid rgba(255,255,255,0.1)', background:'transparent', color:'rgba(237,232,219,0.6)', fontSize:10, fontWeight:700, cursor:'pointer'}}>
+                            ⋯
+                          </button>
+                          {menuOuvert && (
+                            <div style={{position:'absolute', top:'100%', right:0, marginTop:4, background:'#1a1d24', border:'1px solid rgba(255,255,255,0.1)', borderRadius:8, padding:4, zIndex:50, boxShadow:'0 4px 12px rgba(0,0,0,0.5)', minWidth:160}}>
+                              <button onClick={()=>ouvrirFichierR2(f)}
+                                style={{display:'block', width:'100%', textAlign:'left', padding:'7px 10px', border:'none', background:'transparent', color:'#EDE8DB', fontSize:11, cursor:'pointer', borderRadius:5}}>
+                                {type === 'text' ? '📖 Ouvrir dans le lecteur' : '↗ Ouvrir dans le navigateur'}
+                              </button>
+                              <button onClick={()=>telechargerFichierR2(f)}
+                                style={{display:'block', width:'100%', textAlign:'left', padding:'7px 10px', border:'none', background:'transparent', color:'#EDE8DB', fontSize:11, cursor:'pointer', borderRadius:5}}>
+                                📥 Télécharger
+                              </button>
+                              <button onClick={()=>{navigator.clipboard.writeText(f.key); setBiblioMenuOuvert(null)}}
+                                style={{display:'block', width:'100%', textAlign:'left', padding:'7px 10px', border:'none', background:'transparent', color:'rgba(237,232,219,0.6)', fontSize:11, cursor:'pointer', borderRadius:5}}>
+                                📋 Copier la clé R2
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               )
             })}
           </div>
-        )}
-
-        {/* SECTION FAVORIS */}
-        <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0}}>
-          <h3 style={{fontSize:10, fontWeight:700, color:'rgba(237,232,219,0.4)', textTransform:'uppercase', letterSpacing:'0.08em', margin:0}}>
-            ⭐ Favoris {project?.id || 'general'} ({favorisProjet.length})
-          </h3>
-          {favoris.length > favorisProjet.length && (
-            <span style={{fontSize:9, color:'rgba(237,232,219,0.3)'}}>+{favoris.length - favorisProjet.length} autres</span>
-          )}
         </div>
+      )}
 
-        <div style={{flex:'1 1 auto', minHeight:0, overflowY:'auto', display:'flex', flexDirection:'column', gap:6, paddingRight:4,
-          scrollbarWidth:'thin', scrollbarColor:`${project.color}40 transparent`}}>
-
-          {favorisProjet.length === 0 ? (
-            <div style={{padding:'20px 12px', textAlign:'center', color:'rgba(237,232,219,0.3)', background:'rgba(255,255,255,0.02)', borderRadius:8, border:'1px dashed rgba(255,255,255,0.08)'}}>
-              <p style={{fontSize:20, margin:'0 0 6px'}}>⭐</p>
-              <p style={{fontSize:11, margin:'0 0 3px', fontWeight:700}}>Aucun favori</p>
-              <p style={{fontSize:9, margin:0, lineHeight:1.5}}>Clique sur ☆ d'un résultat pour l'ajouter</p>
-            </div>
-          ) : (
-            favorisProjet.map(f => {
-              const sourceConfigFav = SOURCES.find(s => s.id === f.source) || SOURCES[0]
-              let borderColor = sourceConfigFav.color
-              if (f.source === 'gallica') {
-                const journalDetecte = Object.keys(TENDANCES).find(j =>
-                  (f.titre || '').includes(j) || (f.editeur || '').includes(j)
-                )
-                if (journalDetecte) borderColor = tendancePour(journalDetecte).couleur
-              }
-
-              // Cherche un job OCR ou téléchargement terminé pour ce favori
-              const ocrJob = ocrJobs.find(j => j.document_id === f.id && j.status === 'done')
-              const r2Key = f.r2_key || (ocrJob ? ocrJob.r2_key : null)
-              const surlignagesCount = surlignagesDocument(f.id).length
-
-              return (
-                <div key={f.id}
-                  style={{background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:8, padding:'8px 10px', borderLeft:`3px solid ${borderColor}`, flexShrink:0, position:'relative'}}>
-                  <button onClick={()=>supprimerFavori(f.id)} title="Retirer des favoris"
-                    style={{position:'absolute', top:6, right:6, background:'transparent', border:'none', color:'rgba(237,232,219,0.3)', fontSize:11, cursor:'pointer', padding:'2px 4px', lineHeight:1}}>✕</button>
-                  <p style={{fontSize:11, fontWeight:700, color:'#EDE8DB', margin:'0 0 3px', lineHeight:1.4, paddingRight:16}}>{f.titre}</p>
-                  <p style={{fontSize:9, color:'rgba(237,232,219,0.4)', margin:'0 0 4px'}}>
-                    <span style={{color:sourceConfigFav.color, fontWeight:700}}>{sourceConfigFav.icon} {sourceConfigFav.label}</span>
-                    {f.auteur && <span> · {f.auteur.length > 20 ? f.auteur.slice(0,20)+'…' : f.auteur}</span>}
-                    {f.date && <span> · {f.date}</span>}
-                  </p>
-                  {f.theme && (
-                    <p style={{fontSize:8, color:`${project.color}cc`, margin:'0 0 4px', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.05em'}}>#{f.theme}</p>
-                  )}
-                  <div style={{display:'flex', gap:4, flexWrap:'wrap'}}>
-                    {r2Key && (
-                      <button onClick={()=>ouvrirLecteur({
-                          titre:f.titre, source:f.source, r2_key:r2Key,
-                          document_id:f.id, theme:f.theme, auteur:f.auteur, date:f.date
-                        })}
-                        style={{fontSize:9, padding:'3px 7px', borderRadius:5, border:'none', background:project.color, color:'#0D1B2A', fontWeight:700, cursor:'pointer'}}>
-                        📖 Lire
-                        {surlignagesCount > 0 && <span style={{marginLeft:4, opacity:0.7}}>({surlignagesCount})</span>}
-                      </button>
-                    )}
-                    <a href={f.url_gallica} target="_blank" rel="noopener noreferrer"
-                      style={{fontSize:9, color:'rgba(237,232,219,0.5)', textDecoration:'none', padding:'3px 6px'}}>
-                      ↗ Source
-                    </a>
-                  </div>
-                </div>
-              )
-            })
-          )}
-        </div>
-
-        <div style={{height:1, background:'rgba(255,255,255,0.06)', flexShrink:0}}/>
-
-        <p style={{fontSize:9, fontWeight:700, color:'rgba(237,232,219,0.3)', textTransform:'uppercase', letterSpacing:'0.08em', margin:0, flexShrink:0}}>Actions</p>
-
-        <button disabled style={{padding:'9px 11px', borderRadius:8, border:'none', background:`${project.color}30`, color:project.color, fontSize:11, fontWeight:700, cursor:'not-allowed', textAlign:'left', flexShrink:0}}>
-          ✨ Générer rapport IA
-        </button>
-        <button disabled style={{padding:'9px 11px', borderRadius:8, border:'1px solid rgba(255,255,255,0.1)', background:'rgba(255,255,255,0.03)', color:'rgba(237,232,219,0.4)', fontSize:11, fontWeight:700, cursor:'not-allowed', textAlign:'left', flexShrink:0}}>
-          📄 Exporter Markdown
-        </button>
-
-        <div style={{padding:'9px 11px', background:'rgba(91,199,138,0.08)', border:'1px solid rgba(91,199,138,0.2)', borderRadius:8, flexShrink:0}}>
-          <p style={{fontSize:10, fontWeight:700, color:'#5BC78A', margin:'0 0 4px'}}>✅ V4 Lecteur + OCR</p>
-          <p style={{fontSize:9, color:'rgba(237,232,219,0.5)', margin:0, lineHeight:1.5}}>
-            4 sources + OCR Tesseract Gallica + lecteur + surligneur. Prochain : Rapport IA.
-          </p>
-        </div>
-      </div>
     </div>
   )
 }
