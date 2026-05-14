@@ -111,6 +111,60 @@ function uuid() {
   return 'h_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
 }
 
+// ── FORMATAGE TEXTE OCR ───────────────────────────────────────
+function formatTexteOCR(texte) {
+  if (!texte) return { header: [], pages: [] }
+  const lignes = texte.split('\n')
+  const sections = []
+  let header = []
+  let inHeader = true
+  let currentPage = null
+  let currentParagraphe = []
+
+  for (const ligne of lignes) {
+    const trimmed = ligne.trim()
+
+    const pageMatch = trimmed.match(/^={2,}\s*Page\s+(\d+)\s*={2,}$/)
+    if (pageMatch) {
+      if (currentParagraphe.length > 0) {
+        if (currentPage !== null) {
+          currentPage.paragraphes.push(currentParagraphe.join(' ').trim())
+        }
+        currentParagraphe = []
+      }
+      if (currentPage !== null) sections.push(currentPage)
+      currentPage = { type: 'page', num: parseInt(pageMatch[1]), paragraphes: [] }
+      inHeader = false
+      continue
+    }
+
+    if (trimmed === '---' && inHeader) continue
+
+    if (inHeader) {
+      if (trimmed) header.push(trimmed)
+      continue
+    }
+
+    if (currentPage !== null) {
+      if (trimmed === '') {
+        if (currentParagraphe.length > 0) {
+          currentPage.paragraphes.push(currentParagraphe.join(' ').trim())
+          currentParagraphe = []
+        }
+      } else {
+        currentParagraphe.push(trimmed)
+      }
+    }
+  }
+
+  if (currentParagraphe.length > 0 && currentPage !== null) {
+    currentPage.paragraphes.push(currentParagraphe.join(' ').trim())
+  }
+  if (currentPage !== null) sections.push(currentPage)
+
+  return { header, pages: sections }
+}
+
 // ═══════════════════════════════════════════════════════════════
 //                       COMPOSANT PRINCIPAL
 // ═══════════════════════════════════════════════════════════════
@@ -151,7 +205,7 @@ export default function PageSource({ project }) {
 
   // OCR Jobs (persistant + polling)
   const [ocrJobs, setOcrJobs] = useState(() => chargerStorage(OCR_JOBS_STORAGE_KEY))
-  const [ocrModal, setOcrModal] = useState(null) // {result, pages} pour modale OCR
+  const [ocrModal, setOcrModal] = useState(null)
   const pollIntervalRef = useRef(null)
 
   // Lecteur modal
@@ -448,7 +502,6 @@ export default function PageSource({ project }) {
     if (result.source !== 'gallica') { setError('OCR uniquement pour Gallica'); return }
     const arkMatch = result.url_gallica.match(/\/([a-z0-9]+)$/)
     if (!arkMatch) { setError('URL Gallica invalide'); return }
-    // Ouvre la modale OCR avec le résultat
     setOcrModal({ result, ark_id: arkMatch[1], pages: 50 })
   }
 
@@ -614,7 +667,8 @@ export default function PageSource({ project }) {
           </div>
         </div>
       )}
-{/* ═════ MODALE OCR ═════ */}
+
+      {/* ═════ MODALE OCR ═════ */}
       {ocrModal && (
         <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', zIndex:1050, display:'flex', alignItems:'center', justifyContent:'center', padding:20}}
              onClick={e=>{if(e.target===e.currentTarget)setOcrModal(null)}}>
@@ -623,14 +677,12 @@ export default function PageSource({ project }) {
               <h3 style={{fontSize:16, fontWeight:700, color:'#EDE8DB', margin:0}}>🔬 OCR Tesseract</h3>
               <button onClick={()=>setOcrModal(null)} style={{background:'rgba(255,255,255,0.06)', border:'none', borderRadius:8, padding:'5px 10px', cursor:'pointer', color:'rgba(237,232,219,0.6)', fontSize:12}}>✕</button>
             </div>
-
             <p style={{fontSize:12, color:'rgba(237,232,219,0.7)', margin:'0 0 6px', lineHeight:1.5}}>
               Document : <strong style={{color:'#EDE8DB'}}>{ocrModal.result.titre}</strong>
             </p>
             <p style={{fontSize:11, color:'rgba(237,232,219,0.5)', margin:'0 0 16px', lineHeight:1.5}}>
               L'OCR Tesseract va télécharger les images Gallica, les analyser, et stocker le texte dans R2. Compte ~3 secondes par page.
             </p>
-
             <label style={{fontSize:11, color:'rgba(237,232,219,0.6)', display:'block', marginBottom:8, fontWeight:700}}>
               Nombre de pages à OCRiser
             </label>
@@ -639,23 +691,18 @@ export default function PageSource({ project }) {
                 <button key={n} onClick={()=>setOcrModal({...ocrModal, pages:n})}
                   style={{padding:'10px 6px', borderRadius:8, border:`1px solid ${ocrModal.pages === n ? project.color : 'rgba(255,255,255,0.1)'}`, background:ocrModal.pages === n ? `${project.color}20` : 'transparent', color:ocrModal.pages === n ? project.color : 'rgba(237,232,219,0.6)', fontSize:12, fontWeight:700, cursor:'pointer'}}>
                   {n}
-                  <span style={{display:'block', fontSize:9, fontWeight:400, marginTop:2}}>
-                    ~{Math.round(n*3/60)} min
-                  </span>
+                  <span style={{display:'block', fontSize:9, fontWeight:400, marginTop:2}}>~{Math.round(n*3/60)} min</span>
                 </button>
               ))}
             </div>
-
             <input type="number" min="1" max="1000" value={ocrModal.pages}
               onChange={e=>setOcrModal({...ocrModal, pages:parseInt(e.target.value)||50})}
               style={{width:'100%', padding:'8px 10px', borderRadius:8, background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.1)', color:'#EDE8DB', fontSize:13, outline:'none', marginBottom:14, boxSizing:'border-box'}}
               placeholder="Valeur custom (1-1000)"/>
-
             <p style={{fontSize:10, color:'rgba(237,232,219,0.4)', margin:'0 0 14px', lineHeight:1.5}}>
               💡 Estimation : <strong>{Math.round(ocrModal.pages*3/60)} min</strong> pour {ocrModal.pages} pages.
               Le job tourne en arrière-plan, tu peux fermer Pilot et revenir plus tard.
             </p>
-
             <div style={{display:'flex', gap:8}}>
               <button onClick={()=>setOcrModal(null)}
                 style={{flex:1, padding:'10px', borderRadius:8, border:'1px solid rgba(255,255,255,0.1)', background:'transparent', color:'rgba(237,232,219,0.6)', fontSize:12, fontWeight:700, cursor:'pointer'}}>
@@ -669,6 +716,7 @@ export default function PageSource({ project }) {
           </div>
         </div>
       )}
+
       {/* ═════ MODALE LECTEUR PLEIN ÉCRAN ═════ */}
       {lecteurOuvert && (
         <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.92)', zIndex:1100, display:'flex', flexDirection:'column'}}>
@@ -733,12 +781,12 @@ export default function PageSource({ project }) {
           {/* Zone contenu + sidebar surlignages */}
           <div style={{flex:1, display:'flex', overflow:'hidden'}}>
 
-            {/* Texte du document */}
-            <div style={{flex:1, overflowY:'auto', padding:'30px 60px', color:'#EDE8DB', fontFamily:"'Georgia', serif", fontSize:15, lineHeight:1.8}}>
+            {/* Texte du document - fond creme style liseuse */}
+            <div style={{flex:1, overflowY:'auto', padding:'30px 60px', color:'#3D2E1F', fontFamily:"'Georgia', serif", fontSize:16, lineHeight:1.8, background:'#F4ECD8'}}>
               {lecteurLoading && (
                 <div style={{textAlign:'center', padding:60}}>
                   <p style={{fontSize:40, margin:'0 0 12px'}}>⏳</p>
-                  <p style={{fontSize:14, color:'rgba(237,232,219,0.5)', margin:0}}>Chargement du document depuis Cloudflare R2...</p>
+                  <p style={{fontSize:14, color:'rgba(61,46,31,0.6)', margin:0}}>Chargement du document depuis Cloudflare R2...</p>
                 </div>
               )}
               {lecteurError && (
@@ -746,11 +794,42 @@ export default function PageSource({ project }) {
                   <p style={{fontSize:13, color:'#C75B4E', margin:0}}>⚠️ {lecteurError}</p>
                 </div>
               )}
-              {!lecteurLoading && lecteurTexte && (
-                <pre style={{whiteSpace:'pre-wrap', wordWrap:'break-word', fontFamily:'inherit', fontSize:'inherit', margin:0}}>
-                  {lecteurTexte}
-                </pre>
-              )}
+              {!lecteurLoading && lecteurTexte && (() => {
+                const formatted = formatTexteOCR(lecteurTexte)
+                return (
+                  <div style={{maxWidth:760, margin:'0 auto'}}>
+                    {/* HEADER METADATA */}
+                    {formatted.header.length > 0 && (
+                      <div style={{padding:'18px 24px', background:'rgba(91,163,199,0.08)', border:'1px solid rgba(91,163,199,0.2)', borderRadius:10, marginBottom:32, fontFamily:'Inter, sans-serif', fontSize:13}}>
+                        {formatted.header.map((line, i) => {
+                          if (line.startsWith('#')) {
+                            return <h1 key={i} style={{fontSize:18, fontWeight:700, color:'#3D2E1F', margin:'0 0 8px', fontFamily:'Georgia, serif'}}>{line.replace(/^#+\s*/, '')}</h1>
+                          }
+                          return <p key={i} style={{margin:'2px 0', color:'rgba(61,46,31,0.7)'}}>{line}</p>
+                        })}
+                      </div>
+                    )}
+
+                    {/* PAGES */}
+                    {formatted.pages.map(p => (
+                      <div key={`page_${p.num}`} style={{marginBottom:30}}>
+                        <div style={{display:'flex', alignItems:'center', gap:10, margin:'24px 0 16px', opacity:0.5}}>
+                          <div style={{flex:1, height:1, background:'rgba(61,46,31,0.3)'}}/>
+                          <span style={{fontSize:10, fontWeight:700, color:'rgba(61,46,31,0.6)', textTransform:'uppercase', letterSpacing:'0.15em', fontFamily:'Inter, sans-serif'}}>Page {p.num}</span>
+                          <div style={{flex:1, height:1, background:'rgba(61,46,31,0.3)'}}/>
+                        </div>
+                        {p.paragraphes.length === 0 ? (
+                          <p style={{fontSize:12, color:'rgba(61,46,31,0.4)', fontStyle:'italic', textAlign:'center', margin:'12px 0'}}>(page sans texte OCR exploitable)</p>
+                        ) : (
+                          p.paragraphes.map((para, idx) => (
+                            <p key={idx} style={{margin:'0 0 14px', textAlign:'justify', textIndent:24}}>{para}</p>
+                          ))
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )
+              })()}
             </div>
 
             {/* Sidebar surlignages du document */}
@@ -1095,7 +1174,8 @@ export default function PageSource({ project }) {
             ))}
           </div>
         )}
-{/* SECTION OCR TERMINÉS */}
+
+        {/* SECTION OCR TERMINÉS */}
         {jobsDone.length > 0 && (
           <div style={{background:'rgba(91,199,138,0.05)', border:'1px solid rgba(91,199,138,0.2)', borderRadius:10, padding:'10px 12px', flexShrink:0, maxHeight:200, overflowY:'auto'}}>
             <h3 style={{fontSize:10, fontWeight:700, color:'#5BC78A', textTransform:'uppercase', letterSpacing:'0.08em', margin:'0 0 8px'}}>
@@ -1143,6 +1223,7 @@ export default function PageSource({ project }) {
             })}
           </div>
         )}
+
         {/* SECTION FAVORIS */}
         <div style={{display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0}}>
           <h3 style={{fontSize:10, fontWeight:700, color:'rgba(237,232,219,0.4)', textTransform:'uppercase', letterSpacing:'0.08em', margin:0}}>
