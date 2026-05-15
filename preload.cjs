@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Analyse de transcript YouTube via GPT-4o (BYOK)
     // params = { texte, titre?, auteur?, modele? }
     analyzeTranscript:   (params)   => ipcRenderer.invoke('studia:analyzeTranscript', params),
+    callOpenAI:          (params)   => ipcRenderer.invoke('studia:callOpenAI', params),
   },
 
   // Google Drive OAuth (BYOK pure - tokens stockes en local Electron)

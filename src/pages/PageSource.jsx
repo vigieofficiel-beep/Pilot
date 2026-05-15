@@ -268,7 +268,105 @@ export default function PageSource({ project }) {
   const [biblioFiltreDateMin, setBiblioFiltreDateMin] = useState('')
   const [biblioFiltreDateMax, setBiblioFiltreDateMax] = useState('')
   const [biblioMenuOuvert, setBiblioMenuOuvert] = useState(null)
+// ── RAPPORT IA SURLIGNAGES ─────────────────────────────────────
+  const [rapportModal, setRapportModal] = useState(false)
+  const [rapportLoading, setRapportLoading] = useState(false)
+  const [rapportTexte, setRapportTexte] = useState('')
+  const [rapportError, setRapportError] = useState(null)
+  const [rapportCout, setRapportCout] = useState(null)
 
+  // Surlignages du projet courant (toutes couleurs)
+  const surlignagesProjet = highlights.filter(h => h.projet_id === (project?.id || 'general'))
+
+  const genererRapportIA = async () => {
+    if (surlignagesProjet.length === 0) {
+      setRapportError('Aucun surlignage dans ce projet. Surligne du texte dans le lecteur pour generer un rapport.')
+      setRapportModal(true)
+      return
+    }
+
+    setRapportModal(true)
+    setRapportLoading(true)
+    setRapportError(null)
+    setRapportTexte('')
+    setRapportCout(null)
+
+    // Construire le contexte structure par couleur
+    const parCouleur = { jaune:[], vert:[], rouge:[], bleu:[] }
+    for (const h of surlignagesProjet) {
+      if (parCouleur[h.couleur]) parCouleur[h.couleur].push(h)
+    }
+
+    const labelsCouleurs = {
+      jaune: 'IMPORTANT (points cles)',
+      vert:  'CONFIRME (preuves, faits etablis)',
+      rouge: 'ATTENTION (contre-arguments, contradictions, doutes)',
+      bleu:  'CITATION (citations marquantes a reutiliser)',
+    }
+
+    let extraits = ''
+    for (const couleurId of ['jaune','vert','rouge','bleu']) {
+      const items = parCouleur[couleurId]
+      if (items.length === 0) continue
+      extraits += `\n\n=== ${labelsCouleurs[couleurId]} (${items.length} extraits) ===\n`
+      items.forEach((h, i) => {
+        const docInfo = h.theme ? ` [theme: ${h.theme}]` : ''
+        extraits += `\n${i+1}.${docInfo} "${h.texte_surligne}"\n`
+      })
+    }
+
+    const systemPrompt = `Tu es un analyste expert specialise dans la synthese de sources documentaires. Tu vas recevoir une liste d'extraits surlignes par un chercheur dans differentes sources, classes par categorie (Important / Confirme / Attention / Citation). Tu dois produire un argumentaire structure en Markdown qui :
+
+1. Pose une THESE centrale claire deduite des extraits
+2. Liste les PREUVES (en t'appuyant sur les extraits Important + Confirme)
+3. Presente les CONTRE-ARGUMENTS / NUANCES (en t'appuyant sur les extraits Attention)
+4. Integre des CITATIONS MARQUANTES (extraits Citation) au fil du texte
+5. Conclut par une SYNTHESE finale
+
+Regles :
+- Ecris en FRANCAIS, ton academique mais accessible
+- Cite TEXTUELLEMENT les extraits entre guillemets quand tu les utilises
+- Si les extraits sont contradictoires, ASSUME la contradiction au lieu de la masquer
+- Format Markdown propre avec titres ## et listes
+- NE PAS inventer de contenu absent des extraits`
+
+    const userPrompt = `Voici les extraits surlignes pour le projet "${project?.id || 'general'}" (${surlignagesProjet.length} extraits au total) :
+${extraits}
+
+Produis l'argumentaire structure (these / preuves / contre-arguments / citations / synthese) en Markdown.`
+
+    try {
+      const result = await window.electronAPI.studia.callOpenAI({
+        systemPrompt,
+        userPrompt,
+        modele: 'gpt-4o',
+        temperature: 0.4,
+        maxTokens: 4000,
+      })
+      if (!result.success) throw new Error(result.error || 'Erreur OpenAI')
+      setRapportTexte(result.content || '')
+      setRapportCout(result.cost_eur || null)
+    } catch (err) {
+      console.error('[Rapport IA] Erreur:', err)
+      setRapportError(err.message || 'Erreur generation rapport')
+    } finally {
+      setRapportLoading(false)
+    }
+  }
+
+  const telechargerRapport = () => {
+    if (!rapportTexte) return
+    const date = new Date().toISOString().slice(0,10)
+    const projetId = project?.id || 'general'
+    const filename = `rapport-ia_${projetId}_${date}.md`
+    const blob = new Blob([rapportTexte], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
   const chargerBibliotheque = useCallback(async () => {
     if (!apiKey) { setBiblioError('Cle API Agents Doppler introuvable'); return }
     setBiblioLoading(true)
@@ -822,7 +920,68 @@ export default function PageSource({ project }) {
           </button>
         ))}
       </div>
+{/* ═════ MODALE RAPPORT IA ═════ */}
+      {rapportModal && (
+        <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', zIndex:1200, display:'flex', alignItems:'center', justifyContent:'center', padding:20}}
+             onClick={e=>{if(e.target===e.currentTarget && !rapportLoading) setRapportModal(false)}}>
+          <div style={{background:'#1a1d24', border:'1px solid rgba(255,255,255,0.1)', borderRadius:16, width:'100%', maxWidth:820, maxHeight:'90vh', display:'flex', flexDirection:'column'}}>
 
+            {/* Header */}
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'18px 24px', borderBottom:'1px solid rgba(255,255,255,0.08)', flexShrink:0}}>
+              <div>
+                <h3 style={{fontSize:16, fontWeight:700, color:'#EDE8DB', margin:'0 0 3px'}}>✨ Rapport IA — Argumentaire structuré</h3>
+                <p style={{fontSize:11, color:'rgba(237,232,219,0.5)', margin:0}}>
+                  Projet : <strong style={{color:project.color}}>{project?.id || 'general'}</strong>
+                  {' · '}{surlignagesProjet.length} surlignages
+                  {rapportCout && <span> · Coût : {rapportCout.toFixed(4)} €</span>}
+                </p>
+              </div>
+              <button onClick={()=>{if(!rapportLoading) setRapportModal(false)}} disabled={rapportLoading}
+                style={{background:'rgba(255,255,255,0.06)', border:'none', borderRadius:8, padding:'6px 12px', cursor:rapportLoading?'wait':'pointer', color:'rgba(237,232,219,0.7)', fontSize:13, fontWeight:700}}>
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{flex:1, overflowY:'auto', padding:'20px 24px'}}>
+              {rapportLoading && (
+                <div style={{padding:60, textAlign:'center'}}>
+                  <p style={{fontSize:40, margin:'0 0 16px'}}>⏳</p>
+                  <p style={{fontSize:14, color:'#EDE8DB', margin:'0 0 6px', fontWeight:700}}>Génération en cours…</p>
+                  <p style={{fontSize:11, color:'rgba(237,232,219,0.5)', margin:0}}>GPT-4o analyse les {surlignagesProjet.length} surlignages (10-30 sec)</p>
+                </div>
+              )}
+
+              {!rapportLoading && rapportError && (
+                <div style={{padding:24, background:'rgba(199,91,78,0.1)', border:'1px solid rgba(199,91,78,0.3)', borderRadius:10}}>
+                  <p style={{fontSize:13, color:'#C75B4E', margin:'0 0 8px', fontWeight:700}}>⚠️ Erreur</p>
+                  <p style={{fontSize:12, color:'#EDE8DB', margin:0, lineHeight:1.6}}>{rapportError}</p>
+                </div>
+              )}
+
+              {!rapportLoading && !rapportError && rapportTexte && (
+                <div style={{color:'#EDE8DB', fontSize:13, lineHeight:1.7, whiteSpace:'pre-wrap', fontFamily:"'Nunito Sans', sans-serif"}}>
+                  {rapportTexte}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            {!rapportLoading && rapportTexte && (
+              <div style={{padding:'14px 24px', borderTop:'1px solid rgba(255,255,255,0.08)', display:'flex', gap:10, justifyContent:'flex-end', flexShrink:0}}>
+                <button onClick={()=>navigator.clipboard.writeText(rapportTexte)}
+                  style={{padding:'9px 16px', borderRadius:8, border:'1px solid rgba(255,255,255,0.1)', background:'transparent', color:'rgba(237,232,219,0.7)', fontSize:12, fontWeight:700, cursor:'pointer'}}>
+                  📋 Copier
+                </button>
+                <button onClick={telechargerRapport}
+                  style={{padding:'9px 16px', borderRadius:8, border:'none', background:project.color, color:'#0D1B2A', fontSize:12, fontWeight:800, cursor:'pointer'}}>
+                  📥 Télécharger .md
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {/* ═════ MODALE GESTION SOURCES ═════ */}
       {sourcesModal && (
         <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:20}}
@@ -1476,8 +1635,9 @@ export default function PageSource({ project }) {
 
             <p style={{fontSize:9, fontWeight:700, color:'rgba(237,232,219,0.3)', textTransform:'uppercase', letterSpacing:'0.08em', margin:0, flexShrink:0}}>Actions</p>
 
-            <button disabled style={{padding:'9px 11px', borderRadius:8, border:'none', background:`${project.color}30`, color:project.color, fontSize:11, fontWeight:700, cursor:'not-allowed', textAlign:'left', flexShrink:0}}>
-              ✨ Générer rapport IA
+            <button onClick={genererRapportIA}
+              style={{padding:'9px 11px', borderRadius:8, border:'none', background:project.color, color:'#0D1B2A', fontSize:11, fontWeight:800, cursor:'pointer', textAlign:'left', flexShrink:0}}>
+              ✨ Générer rapport IA ({surlignagesProjet.length} surlignages)
             </button>
             <button disabled style={{padding:'9px 11px', borderRadius:8, border:'1px solid rgba(255,255,255,0.1)', background:'rgba(255,255,255,0.03)', color:'rgba(237,232,219,0.4)', fontSize:11, fontWeight:700, cursor:'not-allowed', textAlign:'left', flexShrink:0}}>
               📄 Exporter Markdown

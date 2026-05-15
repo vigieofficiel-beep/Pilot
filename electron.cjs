@@ -989,6 +989,108 @@ ipcMain.handle('studia:deleteImage', async (event, fileUrl) => {
     return { success: false, error: err.message }
   }
 })
+
+// ─────────────────────────────────────────────────────────────
+// HANDLER GENERIQUE BYOK OpenAI
+// Params : { systemPrompt, userPrompt, modele?, temperature?, maxTokens?, jsonMode? }
+// Retour : { success, content, usage?, cost_eur?, error? }
+// ─────────────────────────────────────────────────────────────
+ipcMain.handle('studia:callOpenAI', async (event, params) => {
+  const cfg = loadOpenAIConfig()
+  if (!cfg.apiKey) {
+    return { success: false, error: 'Cle API OpenAI non configuree' }
+  }
+
+  const {
+    systemPrompt = 'Tu es un assistant utile.',
+    userPrompt,
+    modele = 'gpt-4o',
+    temperature = 0.3,
+    maxTokens = 4000,
+    jsonMode = false,
+  } = params || {}
+
+  if (!userPrompt || typeof userPrompt !== 'string' || userPrompt.length < 5) {
+    return { success: false, error: 'userPrompt manquant ou trop court' }
+  }
+
+  // Securite contexte
+  const userTrunc = userPrompt.slice(0, 120000)
+
+  const bodyObj = {
+    model: modele,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user',   content: userTrunc },
+    ],
+    temperature,
+    max_tokens: maxTokens,
+  }
+  if (jsonMode) bodyObj.response_format = { type: 'json_object' }
+
+  const body = JSON.stringify(bodyObj)
+
+  try {
+    const apiResp = await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.openai.com',
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${cfg.apiKey}`,
+          'Content-Type':  'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+        timeout: 120000,
+      }, (res) => {
+        const chunks = []
+        res.on('data', c => chunks.push(c))
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(Buffer.concat(chunks).toString())
+            if (res.statusCode !== 200) {
+              reject(new Error(data.error?.message || `HTTP ${res.statusCode}`))
+            } else {
+              resolve(data)
+            }
+          } catch (e) {
+            reject(new Error('Reponse JSON invalide OpenAI'))
+          }
+        })
+      })
+      req.on('error', reject)
+      req.on('timeout', () => { req.destroy(); reject(new Error('Timeout OpenAI (120s)')) })
+      req.write(body)
+      req.end()
+    })
+
+    const content = apiResp.choices?.[0]?.message?.content || ''
+    const usage = apiResp.usage || {}
+
+    // Calcul cout EUR (gpt-4o : 2.50$/1M input, 10$/1M output, 1 EUR ~ 1.08$)
+    const inputTokens  = usage.prompt_tokens || 0
+    const outputTokens = usage.completion_tokens || 0
+    const costUSD = (inputTokens * 2.5 / 1_000_000) + (outputTokens * 10 / 1_000_000)
+    const costEUR = costUSD / 1.08
+
+    // Maj compteur conso si la fonction existe
+    if (typeof updateOpenAIConsumption === 'function') {
+      try { updateOpenAIConsumption(costEUR) } catch (e) {}
+    }
+
+    return {
+      success: true,
+      content,
+      usage,
+      cost_eur: costEUR,
+      cost_usd: costUSD,
+      modele,
+    }
+  } catch (err) {
+    console.error('[studia:callOpenAI] Erreur:', err.message)
+    return { success: false, error: err.message }
+  }
+})
 // Analyser un transcript YouTube via GPT-4o (BYOK pur, cle ne transite pas par VPS)
 // Params attendus :
 //   { texte, titre?, auteur?, modele? }
