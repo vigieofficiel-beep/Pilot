@@ -3100,13 +3100,193 @@ function TabTranscript({ project }) {
 
 
 
+// ── BANNIERE TRANSFER REÇU DE SOURCE ────────────────────────────
+function TransfertBanniere({ transfert, onVoir, onIgnorer }) {
+  if (!transfert) return null
+  const titreCourt = (transfert.titre || transfert.texte || 'Contenu').slice(0, 60)
+  const isResultat = transfert.type === 'source_resultat'
+  const isSurlignage = transfert.type === 'source_surlignage'
+  return (
+    <div style={{
+      padding: '10px 16px', borderRadius: 10,
+      background: 'rgba(212,168,83,0.1)', border: '1px solid rgba(212,168,83,0.35)',
+      display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexShrink: 0,
+    }}>
+      <span style={{ fontSize: 18 }}>📥</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <p style={{ fontSize: 12, fontWeight: 700, color: '#D4A853', margin: '0 0 2px' }}>
+          Contenu reçu depuis Module Source
+          {isResultat && <span style={{ marginLeft: 8, fontSize: 10, opacity: 0.7 }}>📄 Résultat</span>}
+          {isSurlignage && <span style={{ marginLeft: 8, fontSize: 10, opacity: 0.7 }}>✨ Surlignage</span>}
+        </p>
+        <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.7)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {isResultat && <strong>{titreCourt}</strong>}
+          {isSurlignage && <em>"{titreCourt}..."</em>}
+        </p>
+      </div>
+      <button onClick={onVoir} style={{ padding: '6px 12px', borderRadius: 7, border: 'none', background: '#D4A853', color: '#0D1B2A', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+        👁️ Voir
+      </button>
+      <button onClick={onIgnorer} style={{ padding: '6px 10px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+        ✕ Ignorer
+      </button>
+    </div>
+  )
+}
+
+// ── MODAL DETAIL TRANSFER ───────────────────────────────────────
+function TransfertModal({ transfert, onClose, onTraite }) {
+  if (!transfert) return null
+  const isResultat = transfert.type === 'source_resultat'
+  const isSurlignage = transfert.type === 'source_surlignage'
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+         onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{ background: '#1a1d24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, width: '100%', maxWidth: 600, padding: 26, maxHeight: '85vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+          <h3 style={{ fontSize: 16, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>
+            📥 Contenu reçu de Source
+          </h3>
+          <button onClick={onClose} style={{ background: 'rgba(255,255,255,0.06)', border: 'none', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', color: 'rgba(237,232,219,0.6)', fontSize: 12 }}>✕</button>
+        </div>
+
+        <div style={{ background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 10, padding: 14, marginBottom: 14, fontSize: 11, color: 'rgba(237,232,219,0.6)', lineHeight: 1.6 }}>
+          Envoyé depuis le projet <strong style={{ color: '#D4A853' }}>{transfert.projet_id || '?'}</strong>
+          {transfert.timestamp && <span> · {new Date(transfert.timestamp).toLocaleString('fr-FR')}</span>}
+        </div>
+
+        {isResultat && (
+          <>
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Titre</label>
+              <p style={{ fontSize: 14, color: '#EDE8DB', margin: 0, lineHeight: 1.5, fontWeight: 700 }}>{transfert.titre}</p>
+            </div>
+            {transfert.auteur && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Auteur</label>
+                <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.8)', margin: 0 }}>{transfert.auteur}</p>
+              </div>
+            )}
+            {transfert.date_doc && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Date du document</label>
+                <p style={{ fontSize: 13, color: 'rgba(237,232,219,0.8)', margin: 0 }}>{transfert.date_doc}</p>
+              </div>
+            )}
+            {transfert.snippet && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Extrait</label>
+                <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.7)', margin: 0, lineHeight: 1.6, fontStyle: 'italic', padding: 10, background: 'rgba(0,0,0,0.2)', borderRadius: 6 }}>{transfert.snippet}</p>
+              </div>
+            )}
+            {transfert.url && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Source originale</label>
+                <a href={transfert.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: '#7F77DD', wordBreak: 'break-all', textDecoration: 'none' }}>↗ {transfert.url}</a>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 5, background: 'rgba(255,255,255,0.05)', color: 'rgba(237,232,219,0.6)', fontWeight: 700 }}>📂 {transfert.source || '?'}</span>
+              {transfert.doi && <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 5, background: 'rgba(91,199,138,0.1)', color: '#5BC78A', fontWeight: 700 }}>DOI {transfert.doi}</span>}
+            </div>
+          </>
+        )}
+
+        {isSurlignage && (
+          <>
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Texte surligné</label>
+              <p style={{ fontSize: 13, color: '#EDE8DB', margin: 0, lineHeight: 1.7, padding: 12, background: 'rgba(0,0,0,0.2)', borderRadius: 6, fontStyle: 'italic' }}>"{transfert.texte}"</p>
+            </div>
+            {transfert.document_titre && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Document source</label>
+                <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.7)', margin: 0 }}>
+                  {transfert.document_titre}
+                  {transfert.document_auteur && <span> — {transfert.document_auteur}</span>}
+                </p>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+              {transfert.couleur && <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 5, background: 'rgba(255,255,255,0.05)', color: 'rgba(237,232,219,0.6)', fontWeight: 700 }}>🎨 {transfert.couleur}</span>}
+              {transfert.theme && <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 5, background: 'rgba(127,119,221,0.15)', color: '#7F77DD', fontWeight: 700 }}>#{transfert.theme}</span>}
+            </div>
+          </>
+        )}
+
+        <div style={{ background: 'rgba(127,119,221,0.06)', border: '1px solid rgba(127,119,221,0.2)', borderRadius: 8, padding: 12, marginTop: 18, fontSize: 11, color: 'rgba(237,232,219,0.6)', lineHeight: 1.6 }}>
+          💡 <strong>Tip :</strong> Copie le texte ou le titre ci-dessus et utilise-le dans l'onglet de ton choix (Voix, Images, Cinéma, Shorts ou Transcript). Une fois traité, clique sur "Marquer comme traité" pour faire disparaître la bannière.
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
+          <button onClick={() => {
+            const texteACopier = isResultat
+              ? `${transfert.titre}${transfert.auteur ? ' — ' + transfert.auteur : ''}${transfert.date_doc ? ' (' + transfert.date_doc + ')' : ''}${transfert.snippet ? '\n\n' + transfert.snippet : ''}${transfert.url ? '\n\nSource : ' + transfert.url : ''}`
+              : `"${transfert.texte}"${transfert.document_titre ? '\n\n— ' + transfert.document_titre + (transfert.document_auteur ? ', ' + transfert.document_auteur : '') : ''}`
+            navigator.clipboard.writeText(texteACopier)
+          }} style={{ flex: 1, padding: '11px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.7)', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            📋 Copier le contenu
+          </button>
+          <button onClick={onTraite} style={{ flex: 1, padding: '11px', borderRadius: 10, border: 'none', background: '#5BC78A', color: '#0D1B2A', fontSize: 13, fontWeight: 800, cursor: 'pointer' }}>
+            ✅ Marquer comme traité
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── PAGE PRINCIPALE ───────────────────────────────────────────────
 export default function PageStudIA({ project }) {
   const [activeTab, setActiveTab] = useState('voix')
   const tab = TABS.find(t => t.id === activeTab)
 
+  // Phase B : ecoute des transferts depuis Module Source
+  const [transfertRecu, setTransfertRecu] = useState(null)
+  const [showTransfertModal, setShowTransfertModal] = useState(false)
+
+  const relireTransfert = () => {
+    try {
+      const raw = localStorage.getItem('pilot_transfer_to_studia')
+      if (!raw) { setTransfertRecu(null); return }
+      const parsed = JSON.parse(raw)
+      setTransfertRecu(parsed)
+    } catch (err) {
+      console.error('[StudIA] Erreur lecture transfer:', err)
+      setTransfertRecu(null)
+    }
+  }
+
+  useEffect(() => {
+    relireTransfert()
+    const handler = (e) => { if (e.key === 'pilot_transfer_to_studia') relireTransfert() }
+    window.addEventListener('storage', handler)
+    return () => window.removeEventListener('storage', handler)
+  }, [])
+
+  const ignorerTransfert = () => {
+    if (!confirm('Ignorer ce contenu reçu de Source ? Il sera supprimé.')) return
+    localStorage.removeItem('pilot_transfer_to_studia')
+    setTransfertRecu(null)
+  }
+
+  const traiterTransfert = () => {
+    localStorage.removeItem('pilot_transfer_to_studia')
+    setTransfertRecu(null)
+    setShowTransfertModal(false)
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {showTransfertModal && (
+        <TransfertModal
+          transfert={transfertRecu}
+          onClose={() => setShowTransfertModal(false)}
+          onTraite={traiterTransfert}
+        />
+      )}
+
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,0.06)', paddingBottom: 0 }}>
         {TABS.map(t => {
           const isActive = activeTab === t.id
@@ -3121,6 +3301,13 @@ export default function PageStudIA({ project }) {
         <span style={{ fontSize: 11, padding: '3px 10px', borderRadius: 12, background: `${STUDIA_COLOR}15`, color: STUDIA_COLOR, border: `1px solid ${STUDIA_COLOR}30`, fontWeight: 700 }}>Stud'IA</span>
         <span style={{ fontSize: 12, color: 'rgba(237,232,219,0.5)' }}>{tab?.subtitle}</span>
       </div>
+
+      <TransfertBanniere
+        transfert={transfertRecu}
+        onVoir={() => setShowTransfertModal(true)}
+        onIgnorer={ignorerTransfert}
+      />
+
       <div style={{ flex: 1, overflowY: 'auto' }}>
         {activeTab === 'voix'       && <TabVoix project={project} />}
         {activeTab === 'images'     && <TabImages project={project} />}
