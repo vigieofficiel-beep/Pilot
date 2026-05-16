@@ -269,7 +269,61 @@ function TabContenu({ project, onGoToTemplates }) {
   const [posts,setPosts]=useState([]),[platform,setPlatform]=useState(platforms[0]||'linkedin')
   const [analysing,setAnalysing]=useState(null),[repurpose,setRepurpose]=useState(false)
   const [publishing,setPublishing]=useState(null)
-  const [savedId,setSavedId]=useState(null) // id du post récemment sauvegardé comme template
+  const [savedId,setSavedId]=useState(null)
+
+  // Phase B : ecoute des transferts depuis Module Source
+  const [transfertRecu, setTransfertRecu] = useState(null)
+  const [showTransfertModal, setShowTransfertModal] = useState(false)
+
+  const relireTransfertContenu = () => {
+    try {
+      const raw = localStorage.getItem('pilot_transfer_to_contenu')
+      if (!raw) { setTransfertRecu(null); return }
+      setTransfertRecu(JSON.parse(raw))
+    } catch (err) {
+      console.error('[Contenu] Erreur lecture transfer:', err)
+      setTransfertRecu(null)
+    }
+  }
+
+  useEffect(() => {
+    relireTransfertContenu()
+    const handler = (e) => { if (e.key === 'pilot_transfer_to_contenu') relireTransfertContenu() }
+    window.addEventListener('storage', handler)
+    return () => window.removeEventListener('storage', handler)
+  }, [])
+
+  const ignorerTransfertContenu = () => {
+    if (!confirm('Ignorer ce contenu reçu de Source ? Il sera supprimé.')) return
+    localStorage.removeItem('pilot_transfer_to_contenu')
+    setTransfertRecu(null)
+  }
+
+  const traiterTransfertContenu = () => {
+    localStorage.removeItem('pilot_transfer_to_contenu')
+    setTransfertRecu(null)
+    setShowTransfertModal(false)
+  }
+
+  const utiliserTransfertDansPrompt = () => {
+    if (!transfertRecu) return
+    let texteAjoute = ''
+    if (transfertRecu.type === 'source_resultat') {
+      texteAjoute = `Source : ${transfertRecu.titre}`
+      if (transfertRecu.auteur) texteAjoute += ` — ${transfertRecu.auteur}`
+      if (transfertRecu.date_doc) texteAjoute += ` (${transfertRecu.date_doc})`
+      if (transfertRecu.snippet) texteAjoute += `\n\nExtrait : ${transfertRecu.snippet}`
+      if (transfertRecu.url) texteAjoute += `\n\nURL : ${transfertRecu.url}`
+    } else if (transfertRecu.type === 'source_surlignage') {
+      texteAjoute = `Citation : "${transfertRecu.texte}"`
+      if (transfertRecu.document_titre) {
+        texteAjoute += `\nTirée de : ${transfertRecu.document_titre}`
+        if (transfertRecu.document_auteur) texteAjoute += ` — ${transfertRecu.document_auteur}`
+      }
+    }
+    setPrompt(prev => prev.trim() ? `${prev}\n\n${texteAjoute}` : texteAjoute)
+    traiterTransfertContenu()
+  }
 
   useEffect(()=>{if(!platforms.includes(platform))setPlatform(platforms[0])},[project.id])
 
@@ -293,56 +347,148 @@ function TabContenu({ project, onGoToTemplates }) {
     setTimeout(() => setSavedId(null), 2500)
   }
 
+  // Helpers transfer modal display
+  const isResultat = transfertRecu?.type === 'source_resultat'
+  const isSurlignage = transfertRecu?.type === 'source_surlignage'
+  const titreCourt = (transfertRecu?.titre || transfertRecu?.texte || '').slice(0, 60)
+
   return(
-    <div style={{display:'flex',gap:24,height:'100%'}}>
+    <div style={{display:'flex',flexDirection:'column',gap:14,height:'100%'}}>
       {analysing&&<ScorePanel post={analysing} project={project} onClose={()=>setAnalysing(null)} onRewrite={(c)=>rewrite(analysing.id,c)}/>}
       {repurpose&&<RepurposePanel project={project} onClose={()=>setRepurpose(false)} onAddPosts={addPosts}/>}
-      <div style={{flex:1,display:'flex',flexDirection:'column',gap:14}}>
-        <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:14,padding:20}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}><h3 style={{fontSize:14,fontWeight:700,color:'#EDE8DB',margin:0}}>🤖 Génération IA</h3><button onClick={()=>setRepurpose(true)} style={{padding:'6px 14px',borderRadius:20,border:'1px solid rgba(255,255,255,0.15)',background:'rgba(255,255,255,0.04)',color:'rgba(237,232,219,0.6)',fontSize:11,fontWeight:700,cursor:'pointer'}}>♻️ Repurpose</button></div>
-          <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>{platforms.map(p=><button key={p} onClick={()=>setPlatform(p)} style={{padding:'5px 14px',borderRadius:20,border:`1px solid ${platform===p?project.color:'rgba(255,255,255,0.1)'}`,background:platform===p?`${project.color}20`:'transparent',color:platform===p?project.color:'rgba(237,232,219,0.5)',fontSize:11,fontWeight:700,cursor:'pointer'}}>{plt_icon[p]||'📱'} {p}</button>)}</div>
-          <textarea value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder={`Décris ton idée pour ${project.label}...`} rows={5} style={{width:'100%',padding:'12px 14px',borderRadius:10,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:13,outline:'none',resize:'vertical',fontFamily:"'Nunito Sans',sans-serif",boxSizing:'border-box',lineHeight:1.6}}/>
-          <div style={{display:'flex',gap:8,marginTop:10}}>
-            <button onClick={()=>generer(platform,true)} disabled={loading||!prompt.trim()} style={{flex:1,padding:'11px',borderRadius:10,border:'none',background:loading||!prompt.trim()?`${project.color}40`:project.color,color:'#0D1B2A',fontSize:13,fontWeight:800,cursor:loading||!prompt.trim()?'not-allowed':'pointer'}}>{loading?'⏳ Génération...':`✨ Générer ${platform}`}</button>
-            <button onClick={genererTout} disabled={genAll||!prompt.trim()} style={{padding:'11px 16px',borderRadius:10,border:`1px solid ${project.color}`,background:'transparent',color:project.color,fontSize:12,fontWeight:700,cursor:genAll||!prompt.trim()?'not-allowed':'pointer',whiteSpace:'nowrap'}}>{genAll?'⏳...':'🌐 Tout générer'}</button>
+
+      {/* MODAL DETAIL TRANSFER */}
+      {showTransfertModal && transfertRecu && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:2100,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}
+             onClick={e=>{if(e.target===e.currentTarget)setShowTransfertModal(false)}}>
+          <div style={{background:'#1a1d24',border:'1px solid rgba(255,255,255,0.1)',borderRadius:16,width:'100%',maxWidth:600,padding:26,maxHeight:'85vh',overflowY:'auto'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}}>
+              <h3 style={{fontSize:16,fontWeight:700,color:'#EDE8DB',margin:0}}>📥 Contenu reçu de Source</h3>
+              <button onClick={()=>setShowTransfertModal(false)} style={{background:'rgba(255,255,255,0.06)',border:'none',borderRadius:8,padding:'5px 10px',cursor:'pointer',color:'rgba(237,232,219,0.6)',fontSize:12}}>✕</button>
+            </div>
+            <div style={{background:'rgba(212,168,83,0.06)',border:'1px solid rgba(212,168,83,0.2)',borderRadius:10,padding:14,marginBottom:14,fontSize:11,color:'rgba(237,232,219,0.6)',lineHeight:1.6}}>
+              Envoyé depuis le projet <strong style={{color:'#D4A853'}}>{transfertRecu.projet_id||'?'}</strong>
+              {transfertRecu.timestamp&&<span> · {new Date(transfertRecu.timestamp).toLocaleString('fr-FR')}</span>}
+            </div>
+            {isResultat && (
+              <>
+                <div style={{marginBottom:14}}>
+                  <label style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',display:'block',marginBottom:4}}>Titre</label>
+                  <p style={{fontSize:14,color:'#EDE8DB',margin:0,lineHeight:1.5,fontWeight:700}}>{transfertRecu.titre}</p>
+                </div>
+                {transfertRecu.auteur && (<div style={{marginBottom:14}}><label style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',display:'block',marginBottom:4}}>Auteur</label><p style={{fontSize:13,color:'rgba(237,232,219,0.8)',margin:0}}>{transfertRecu.auteur}</p></div>)}
+                {transfertRecu.date_doc && (<div style={{marginBottom:14}}><label style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',display:'block',marginBottom:4}}>Date du document</label><p style={{fontSize:13,color:'rgba(237,232,219,0.8)',margin:0}}>{transfertRecu.date_doc}</p></div>)}
+                {transfertRecu.snippet && (<div style={{marginBottom:14}}><label style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',display:'block',marginBottom:4}}>Extrait</label><p style={{fontSize:12,color:'rgba(237,232,219,0.7)',margin:0,lineHeight:1.6,fontStyle:'italic',padding:10,background:'rgba(0,0,0,0.2)',borderRadius:6}}>{transfertRecu.snippet}</p></div>)}
+                {transfertRecu.url && (<div style={{marginBottom:14}}><label style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',display:'block',marginBottom:4}}>Source originale</label><a href={transfertRecu.url} target="_blank" rel="noopener noreferrer" style={{fontSize:12,color:project.color,wordBreak:'break-all',textDecoration:'none'}}>↗ {transfertRecu.url}</a></div>)}
+                <div style={{display:'flex',gap:8,marginTop:6,flexWrap:'wrap'}}>
+                  <span style={{fontSize:10,padding:'3px 8px',borderRadius:5,background:'rgba(255,255,255,0.05)',color:'rgba(237,232,219,0.6)',fontWeight:700}}>📂 {transfertRecu.source||'?'}</span>
+                  {transfertRecu.doi && <span style={{fontSize:10,padding:'3px 8px',borderRadius:5,background:'rgba(91,199,138,0.1)',color:'#5BC78A',fontWeight:700}}>DOI {transfertRecu.doi}</span>}
+                </div>
+              </>
+            )}
+            {isSurlignage && (
+              <>
+                <div style={{marginBottom:14}}>
+                  <label style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',display:'block',marginBottom:4}}>Texte surligné</label>
+                  <p style={{fontSize:13,color:'#EDE8DB',margin:0,lineHeight:1.7,padding:12,background:'rgba(0,0,0,0.2)',borderRadius:6,fontStyle:'italic'}}>"{transfertRecu.texte}"</p>
+                </div>
+                {transfertRecu.document_titre && (<div style={{marginBottom:14}}><label style={{fontSize:10,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',display:'block',marginBottom:4}}>Document source</label><p style={{fontSize:12,color:'rgba(237,232,219,0.7)',margin:0}}>{transfertRecu.document_titre}{transfertRecu.document_auteur && <span> — {transfertRecu.document_auteur}</span>}</p></div>)}
+                <div style={{display:'flex',gap:8,marginTop:6,flexWrap:'wrap'}}>
+                  {transfertRecu.couleur && <span style={{fontSize:10,padding:'3px 8px',borderRadius:5,background:'rgba(255,255,255,0.05)',color:'rgba(237,232,219,0.6)',fontWeight:700}}>🎨 {transfertRecu.couleur}</span>}
+                  {transfertRecu.theme && <span style={{fontSize:10,padding:'3px 8px',borderRadius:5,background:`${project.color}20`,color:project.color,fontWeight:700}}>#{transfertRecu.theme}</span>}
+                </div>
+              </>
+            )}
+            <div style={{background:`${project.color}10`,border:`1px solid ${project.color}30`,borderRadius:8,padding:12,marginTop:18,fontSize:11,color:'rgba(237,232,219,0.6)',lineHeight:1.6}}>
+              💡 <strong>Astuce :</strong> Clique sur <strong>"📝 Injecter dans le prompt"</strong> pour pré-remplir la zone d'idée ci-dessous avec ce contenu. Tu pourras ensuite générer un post sur la plateforme de ton choix.
+            </div>
+            <div style={{display:'flex',gap:8,marginTop:18,flexWrap:'wrap'}}>
+              <button onClick={()=>{
+                const t = isResultat
+                  ? `${transfertRecu.titre}${transfertRecu.auteur?' — '+transfertRecu.auteur:''}${transfertRecu.date_doc?' ('+transfertRecu.date_doc+')':''}${transfertRecu.snippet?'\n\n'+transfertRecu.snippet:''}${transfertRecu.url?'\n\nSource : '+transfertRecu.url:''}`
+                  : `"${transfertRecu.texte}"${transfertRecu.document_titre?'\n\n— '+transfertRecu.document_titre+(transfertRecu.document_auteur?', '+transfertRecu.document_auteur:''):''}`
+                navigator.clipboard.writeText(t)
+              }} style={{flex:1,minWidth:140,padding:'11px',borderRadius:10,border:'1px solid rgba(255,255,255,0.15)',background:'transparent',color:'rgba(237,232,219,0.7)',fontSize:12,fontWeight:700,cursor:'pointer'}}>
+                📋 Copier
+              </button>
+              <button onClick={utiliserTransfertDansPrompt} style={{flex:1,minWidth:140,padding:'11px',borderRadius:10,border:'none',background:project.color,color:'#0D1B2A',fontSize:12,fontWeight:800,cursor:'pointer'}}>
+                📝 Injecter dans le prompt
+              </button>
+              <button onClick={traiterTransfertContenu} style={{flex:1,minWidth:140,padding:'11px',borderRadius:10,border:'none',background:'#5BC78A',color:'#0D1B2A',fontSize:12,fontWeight:800,cursor:'pointer'}}>
+                ✅ Marquer traité
+              </button>
+            </div>
           </div>
         </div>
-        <div style={{background:'rgba(255,255,255,0.02)',border:'2px dashed rgba(255,255,255,0.08)',borderRadius:14,padding:20,textAlign:'center',cursor:'pointer'}} onMouseEnter={e=>e.currentTarget.style.borderColor='rgba(255,255,255,0.2)'} onMouseLeave={e=>e.currentTarget.style.borderColor='rgba(255,255,255,0.08)'}><div style={{fontSize:28,marginBottom:6}}>📎</div><p style={{fontSize:13,color:'rgba(237,232,219,0.4)',margin:0}}>Glisse tes fichiers ici</p><p style={{fontSize:11,color:'rgba(237,232,219,0.2)',margin:'4px 0 0'}}>Images · Vidéos · PDF · Documents</p></div>
-      </div>
-      <div style={{width:340,display:'flex',flexDirection:'column',gap:10,overflowY:'auto'}}>
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
-          <h3 style={{fontSize:11,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:0}}>Posts générés {posts.length>0&&`(${posts.length})`}</h3>
-          {posts.length>0&&(
-            <button onClick={onGoToTemplates} style={{fontSize:10,color:project.color,background:`${project.color}15`,border:`1px solid ${project.color}30`,padding:'2px 8px',borderRadius:8,cursor:'pointer',fontWeight:700}}>
-              📚 Voir mes templates
-            </button>
-          )}
+      )}
+
+      {/* BANNIERE TRANSFER */}
+      {transfertRecu && (
+        <div style={{padding:'10px 16px',borderRadius:10,background:'rgba(212,168,83,0.1)',border:'1px solid rgba(212,168,83,0.35)',display:'flex',alignItems:'center',gap:12,flexShrink:0}}>
+          <span style={{fontSize:18}}>📥</span>
+          <div style={{flex:1,minWidth:0}}>
+            <p style={{fontSize:12,fontWeight:700,color:'#D4A853',margin:'0 0 2px'}}>
+              Contenu reçu depuis Module Source
+              {isResultat && <span style={{marginLeft:8,fontSize:10,opacity:0.7}}>📄 Résultat</span>}
+              {isSurlignage && <span style={{marginLeft:8,fontSize:10,opacity:0.7}}>✨ Surlignage</span>}
+            </p>
+            <p style={{fontSize:11,color:'rgba(237,232,219,0.7)',margin:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+              {isResultat && <strong>{titreCourt}</strong>}
+              {isSurlignage && <em>"{titreCourt}..."</em>}
+            </p>
+          </div>
+          <button onClick={()=>setShowTransfertModal(true)} style={{padding:'6px 12px',borderRadius:7,border:'none',background:'#D4A853',color:'#0D1B2A',fontSize:11,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap'}}>👁️ Voir</button>
+          <button onClick={ignorerTransfertContenu} style={{padding:'6px 10px',borderRadius:7,border:'1px solid rgba(255,255,255,0.1)',background:'transparent',color:'rgba(237,232,219,0.5)',fontSize:11,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>✕ Ignorer</button>
         </div>
-        {posts.length===0?<div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:12,padding:24,textAlign:'center',color:'rgba(237,232,219,0.3)',fontSize:13}}>Aucun post encore.<br/>Génère ton premier post ✨</div>:posts.map(p=>(
-          <div key={p.id} style={{background:'rgba(255,255,255,0.03)',border:`1px solid ${p.statut==='publie'?'rgba(91,199,138,0.3)':'rgba(255,255,255,0.07)'}`,borderRadius:12,padding:14,flexShrink:0}}>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
-              <span style={{fontSize:10,fontWeight:700,color:project.color,textTransform:'uppercase'}}>{plt_icon[p.platform]||'📱'} {p.platform}</span>
-              <div style={{display:'flex',alignItems:'center',gap:6}}>
-                {savedId===p.id&&<span style={{fontSize:9,color:'#D4A853',fontWeight:700}}>💾 Sauvegardé !</span>}
-                {p.statut==='publie'&&<span style={{fontSize:9,color:'#5BC78A',fontWeight:700}}>✅ Publié</span>}
-                <span style={{fontSize:10,color:'rgba(237,232,219,0.3)'}}>{p.date}</span>
+      )}
+
+      <div style={{display:'flex',gap:24,flex:1,overflow:'hidden'}}>
+        <div style={{flex:1,display:'flex',flexDirection:'column',gap:14}}>
+          <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:14,padding:20}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}><h3 style={{fontSize:14,fontWeight:700,color:'#EDE8DB',margin:0}}>🤖 Génération IA</h3><button onClick={()=>setRepurpose(true)} style={{padding:'6px 14px',borderRadius:20,border:'1px solid rgba(255,255,255,0.15)',background:'rgba(255,255,255,0.04)',color:'rgba(237,232,219,0.6)',fontSize:11,fontWeight:700,cursor:'pointer'}}>♻️ Repurpose</button></div>
+            <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>{platforms.map(p=><button key={p} onClick={()=>setPlatform(p)} style={{padding:'5px 14px',borderRadius:20,border:`1px solid ${platform===p?project.color:'rgba(255,255,255,0.1)'}`,background:platform===p?`${project.color}20`:'transparent',color:platform===p?project.color:'rgba(237,232,219,0.5)',fontSize:11,fontWeight:700,cursor:'pointer'}}>{plt_icon[p]||'📱'} {p}</button>)}</div>
+            <textarea value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder={`Décris ton idée pour ${project.label}...`} rows={5} style={{width:'100%',padding:'12px 14px',borderRadius:10,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#EDE8DB',fontSize:13,outline:'none',resize:'vertical',fontFamily:"'Nunito Sans',sans-serif",boxSizing:'border-box',lineHeight:1.6}}/>
+            <div style={{display:'flex',gap:8,marginTop:10}}>
+              <button onClick={()=>generer(platform,true)} disabled={loading||!prompt.trim()} style={{flex:1,padding:'11px',borderRadius:10,border:'none',background:loading||!prompt.trim()?`${project.color}40`:project.color,color:'#0D1B2A',fontSize:13,fontWeight:800,cursor:loading||!prompt.trim()?'not-allowed':'pointer'}}>{loading?'⏳ Génération...':`✨ Générer ${platform}`}</button>
+              <button onClick={genererTout} disabled={genAll||!prompt.trim()} style={{padding:'11px 16px',borderRadius:10,border:`1px solid ${project.color}`,background:'transparent',color:project.color,fontSize:12,fontWeight:700,cursor:genAll||!prompt.trim()?'not-allowed':'pointer',whiteSpace:'nowrap'}}>{genAll?'⏳...':'🌐 Tout générer'}</button>
+            </div>
+          </div>
+          <div style={{background:'rgba(255,255,255,0.02)',border:'2px dashed rgba(255,255,255,0.08)',borderRadius:14,padding:20,textAlign:'center',cursor:'pointer'}} onMouseEnter={e=>e.currentTarget.style.borderColor='rgba(255,255,255,0.2)'} onMouseLeave={e=>e.currentTarget.style.borderColor='rgba(255,255,255,0.08)'}><div style={{fontSize:28,marginBottom:6}}>📎</div><p style={{fontSize:13,color:'rgba(237,232,219,0.4)',margin:0}}>Glisse tes fichiers ici</p><p style={{fontSize:11,color:'rgba(237,232,219,0.2)',margin:'4px 0 0'}}>Images · Vidéos · PDF · Documents</p></div>
+        </div>
+        <div style={{width:340,display:'flex',flexDirection:'column',gap:10,overflowY:'auto'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+            <h3 style={{fontSize:11,fontWeight:700,color:'rgba(237,232,219,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',margin:0}}>Posts générés {posts.length>0&&`(${posts.length})`}</h3>
+            {posts.length>0&&(
+              <button onClick={onGoToTemplates} style={{fontSize:10,color:project.color,background:`${project.color}15`,border:`1px solid ${project.color}30`,padding:'2px 8px',borderRadius:8,cursor:'pointer',fontWeight:700}}>
+                📚 Voir mes templates
+              </button>
+            )}
+          </div>
+          {posts.length===0?<div style={{background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:12,padding:24,textAlign:'center',color:'rgba(237,232,219,0.3)',fontSize:13}}>Aucun post encore.<br/>Génère ton premier post ✨</div>:posts.map(p=>(
+            <div key={p.id} style={{background:'rgba(255,255,255,0.03)',border:`1px solid ${p.statut==='publie'?'rgba(91,199,138,0.3)':'rgba(255,255,255,0.07)'}`,borderRadius:12,padding:14,flexShrink:0}}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
+                <span style={{fontSize:10,fontWeight:700,color:project.color,textTransform:'uppercase'}}>{plt_icon[p.platform]||'📱'} {p.platform}</span>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  {savedId===p.id&&<span style={{fontSize:9,color:'#D4A853',fontWeight:700}}>💾 Sauvegardé !</span>}
+                  {p.statut==='publie'&&<span style={{fontSize:9,color:'#5BC78A',fontWeight:700}}>✅ Publié</span>}
+                  <span style={{fontSize:10,color:'rgba(237,232,219,0.3)'}}>{p.date}</span>
+                </div>
+              </div>
+              <p style={{fontSize:12,color:'rgba(237,232,219,0.75)',lineHeight:1.6,margin:'0 0 10px',whiteSpace:'pre-wrap',maxHeight:140,overflow:'hidden'}}>{p.contenu}</p>
+              <div style={{display:'flex',gap:5}}>
+                <button onClick={()=>copier(p.contenu)} style={{flex:1,padding:'6px',borderRadius:7,border:'none',background:project.color,color:'#0D1B2A',fontSize:11,fontWeight:700,cursor:'pointer'}}>📋 Copier</button>
+                <button onClick={()=>setAnalysing(p)} style={{padding:'6px 8px',borderRadius:7,border:`1px solid ${project.color}40`,background:`${project.color}10`,color:project.color,fontSize:11,cursor:'pointer'}} title="Score">🎯</button>
+                <button onClick={()=>sauvegarderTemplate(p)} title="Sauvegarder comme template" style={{padding:'6px 8px',borderRadius:7,border:'1px solid rgba(212,168,83,0.3)',background:'rgba(212,168,83,0.08)',color:'#D4A853',fontSize:11,cursor:'pointer'}}>💾</button>
+                <button onClick={()=>publier(p)} disabled={publishing===p.id} style={{padding:'6px 10px',borderRadius:7,border:'1px solid rgba(91,199,138,0.4)',background:'rgba(91,199,138,0.1)',color:'#5BC78A',fontSize:11,fontWeight:700,cursor:publishing===p.id?'not-allowed':'pointer'}}>{publishing===p.id?'⏳':'🚀 Publier'}</button>
+                <button onClick={()=>supprimer(p.id)} style={{padding:'6px 8px',borderRadius:7,border:'1px solid rgba(199,91,78,0.2)',background:'transparent',color:'#C75B4E',fontSize:11,cursor:'pointer'}}>🗑️</button>
               </div>
             </div>
-            <p style={{fontSize:12,color:'rgba(237,232,219,0.75)',lineHeight:1.6,margin:'0 0 10px',whiteSpace:'pre-wrap',maxHeight:140,overflow:'hidden'}}>{p.contenu}</p>
-            <div style={{display:'flex',gap:5}}>
-              <button onClick={()=>copier(p.contenu)} style={{flex:1,padding:'6px',borderRadius:7,border:'none',background:project.color,color:'#0D1B2A',fontSize:11,fontWeight:700,cursor:'pointer'}}>📋 Copier</button>
-              <button onClick={()=>setAnalysing(p)} style={{padding:'6px 8px',borderRadius:7,border:`1px solid ${project.color}40`,background:`${project.color}10`,color:project.color,fontSize:11,cursor:'pointer'}} title="Score">🎯</button>
-              <button onClick={()=>sauvegarderTemplate(p)} title="Sauvegarder comme template" style={{padding:'6px 8px',borderRadius:7,border:'1px solid rgba(212,168,83,0.3)',background:'rgba(212,168,83,0.08)',color:'#D4A853',fontSize:11,cursor:'pointer'}}>💾</button>
-              <button onClick={()=>publier(p)} disabled={publishing===p.id} style={{padding:'6px 10px',borderRadius:7,border:'1px solid rgba(91,199,138,0.4)',background:'rgba(91,199,138,0.1)',color:'#5BC78A',fontSize:11,fontWeight:700,cursor:publishing===p.id?'not-allowed':'pointer'}}>{publishing===p.id?'⏳':'🚀 Publier'}</button>
-              <button onClick={()=>supprimer(p.id)} style={{padding:'6px 8px',borderRadius:7,border:'1px solid rgba(199,91,78,0.2)',background:'transparent',color:'#C75B4E',fontSize:11,cursor:'pointer'}}>🗑️</button>
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </div>
   )
 }
-
 // ── APP ───────────────────────────────────────────────────────────
 export default function App() {
   const [licenceOk,     setLicenceOk]     = useState(null)
