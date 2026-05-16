@@ -1740,7 +1740,58 @@ function TabCinema({ project }) {
   const [showAnnotModal, setShowAnnotModal] = useState(false)
   const [pausedAt, setPausedAt] = useState(0)
   const videoRef = useRef(null)
+// Phase B : ecoute des transferts depuis Module 13 / Source
+  const [transfertRecu, setTransfertRecu] = useState(null)
+  const [showTransfertModal, setShowTransfertModal] = useState(false)
 
+  const relireTransfertCinema = () => {
+    try {
+      const raw = localStorage.getItem('pilot_transfer_to_cinema')
+      if (!raw) { setTransfertRecu(null); return }
+      setTransfertRecu(JSON.parse(raw))
+    } catch (err) {
+      console.error('[Cinema] Erreur lecture transfer:', err)
+      setTransfertRecu(null)
+    }
+  }
+
+  useEffect(() => {
+    relireTransfertCinema()
+    const handler = (e) => { if (e.key === 'pilot_transfer_to_cinema') relireTransfertCinema() }
+    window.addEventListener('storage', handler)
+    return () => window.removeEventListener('storage', handler)
+  }, [])
+
+  const ignorerTransfertCinema = () => {
+    if (!confirm('Ignorer ce contenu reçu ? Il sera supprimé.')) return
+    localStorage.removeItem('pilot_transfer_to_cinema')
+    setTransfertRecu(null)
+  }
+
+  const traiterTransfertCinema = () => {
+    localStorage.removeItem('pilot_transfer_to_cinema')
+    setTransfertRecu(null)
+    setShowTransfertModal(false)
+  }
+
+  const injecterTransfertDansBrief = () => {
+    if (!transfertRecu) return
+    if (transfertRecu.type === 'transcript_youtube') {
+      const titreSuggere = `Vidéo basée sur transcript YouTube ${transfertRecu.videoId}`
+      const sujetGenere = transfertRecu.analyse?.resume_court
+        ? `Sujet (basé sur transcript YouTube ${transfertRecu.url}) :\n${transfertRecu.analyse.resume_court}\n\nThèmes : ${(transfertRecu.analyse.themes || []).join(', ')}`
+        : `Sujet basé sur le transcript YouTube ${transfertRecu.url} (${Math.round(transfertRecu.dureeSec / 60)} min, ${transfertRecu.langue}). Transcript complet :\n\n${transfertRecu.texteComplet.slice(0, 1500)}${transfertRecu.texteComplet.length > 1500 ? '...' : ''}`
+      if (!titre.trim()) setTitre(titreSuggere)
+      setSujet(prev => prev.trim() ? `${prev}\n\n---\n\n${sujetGenere}` : sujetGenere)
+    } else if (transfertRecu.type === 'source_resultat') {
+      const texte = `Source : ${transfertRecu.titre}${transfertRecu.auteur ? ' — ' + transfertRecu.auteur : ''}${transfertRecu.date_doc ? ' (' + transfertRecu.date_doc + ')' : ''}${transfertRecu.snippet ? '\n\nExtrait : ' + transfertRecu.snippet : ''}${transfertRecu.url ? '\n\nURL : ' + transfertRecu.url : ''}`
+      setSujet(prev => prev.trim() ? `${prev}\n\n${texte}` : texte)
+    } else if (transfertRecu.type === 'source_surlignage') {
+      const texte = `Citation : "${transfertRecu.texte}"${transfertRecu.document_titre ? '\nTirée de : ' + transfertRecu.document_titre + (transfertRecu.document_auteur ? ' — ' + transfertRecu.document_auteur : '') : ''}`
+      setSujet(prev => prev.trim() ? `${prev}\n\n${texte}` : texte)
+    }
+    traiterTransfertCinema()
+  }
   const refreshScripts = async () => {
     setLoadingList(true)
     try {
@@ -1908,6 +1959,122 @@ function TabCinema({ project }) {
   return (
     <>
       {showAnnotModal && <AnnotationModal timestamp={pausedAt} onSave={sauvegarderAnnotation} onClose={() => setShowAnnotModal(false)} />}
+
+      {/* MODAL DETAIL TRANSFER */}
+      {showTransfertModal && transfertRecu && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+             onClick={e => { if (e.target === e.currentTarget) setShowTransfertModal(false) }}>
+          <div style={{ background: '#1a1d24', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 16, width: '100%', maxWidth: 640, padding: 26, maxHeight: '85vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 700, color: '#EDE8DB', margin: 0 }}>📥 Contenu reçu pour Studio Cinéma</h3>
+              <button onClick={() => setShowTransfertModal(false)} style={{ background: 'rgba(255,255,255,0.06)', border: 'none', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', color: 'rgba(237,232,219,0.6)', fontSize: 12 }}>✕</button>
+            </div>
+            <div style={{ background: 'rgba(212,168,83,0.06)', border: '1px solid rgba(212,168,83,0.2)', borderRadius: 10, padding: 14, marginBottom: 14, fontSize: 11, color: 'rgba(237,232,219,0.6)', lineHeight: 1.6 }}>
+              Origine : <strong style={{ color: '#D4A853' }}>{transfertRecu.origin || transfertRecu.type}</strong>
+              {transfertRecu.timestamp && <span> · {new Date(transfertRecu.timestamp).toLocaleString('fr-FR')}</span>}
+            </div>
+
+            {transfertRecu.type === 'transcript_youtube' && (
+              <>
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Vidéo YouTube</label>
+                  <a href={transfertRecu.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, color: STUDIA_COLOR, wordBreak: 'break-all', textDecoration: 'none' }}>↗ {transfertRecu.url}</a>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 5, background: 'rgba(255,255,255,0.05)', color: 'rgba(237,232,219,0.6)', fontWeight: 700 }}>📺 {transfertRecu.videoId}</span>
+                  <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 5, background: 'rgba(255,255,255,0.05)', color: 'rgba(237,232,219,0.6)', fontWeight: 700 }}>🌐 {transfertRecu.langue?.toUpperCase()}</span>
+                  <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 5, background: 'rgba(255,255,255,0.05)', color: 'rgba(237,232,219,0.6)', fontWeight: 700 }}>⏱️ {fmtTime(transfertRecu.dureeSec)}</span>
+                  {transfertRecu.analyse && <span style={{ fontSize: 10, padding: '3px 8px', borderRadius: 5, background: 'rgba(91,199,138,0.1)', color: '#5BC78A', fontWeight: 700 }}>✨ Analyse IA dispo</span>}
+                </div>
+                {transfertRecu.analyse?.resume_court && (
+                  <div style={{ marginBottom: 14 }}>
+                    <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Résumé IA</label>
+                    <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.7)', margin: 0, lineHeight: 1.6, padding: 10, background: 'rgba(0,0,0,0.2)', borderRadius: 6 }}>{transfertRecu.analyse.resume_court}</p>
+                  </div>
+                )}
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Aperçu du transcript</label>
+                  <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.6)', margin: 0, lineHeight: 1.5, padding: 10, background: 'rgba(0,0,0,0.2)', borderRadius: 6, maxHeight: 150, overflowY: 'auto' }}>
+                    {transfertRecu.texteComplet.slice(0, 600)}{transfertRecu.texteComplet.length > 600 && '…'}
+                  </p>
+                  <p style={{ fontSize: 9, color: 'rgba(237,232,219,0.4)', margin: '4px 0 0', textAlign: 'right' }}>{transfertRecu.texteComplet.length.toLocaleString('fr-FR')} caractères au total</p>
+                </div>
+              </>
+            )}
+
+            {transfertRecu.type === 'source_resultat' && (
+              <>
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Titre</label>
+                  <p style={{ fontSize: 14, color: '#EDE8DB', margin: 0, lineHeight: 1.5, fontWeight: 700 }}>{transfertRecu.titre}</p>
+                </div>
+                {transfertRecu.auteur && <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.6)', margin: '0 0 8px' }}>{transfertRecu.auteur}{transfertRecu.date_doc && ` · ${transfertRecu.date_doc}`}</p>}
+                {transfertRecu.snippet && <p style={{ fontSize: 12, color: 'rgba(237,232,219,0.7)', margin: '0 0 10px', lineHeight: 1.6, fontStyle: 'italic', padding: 10, background: 'rgba(0,0,0,0.2)', borderRadius: 6 }}>{transfertRecu.snippet}</p>}
+                {transfertRecu.url && <a href={transfertRecu.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: STUDIA_COLOR, wordBreak: 'break-all', textDecoration: 'none' }}>↗ {transfertRecu.url}</a>}
+              </>
+            )}
+
+            {transfertRecu.type === 'source_surlignage' && (
+              <>
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 10, fontWeight: 700, color: 'rgba(237,232,219,0.4)', textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>Texte surligné</label>
+                  <p style={{ fontSize: 13, color: '#EDE8DB', margin: 0, lineHeight: 1.7, padding: 12, background: 'rgba(0,0,0,0.2)', borderRadius: 6, fontStyle: 'italic' }}>"{transfertRecu.texte}"</p>
+                </div>
+                {transfertRecu.document_titre && <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.5)', margin: 0 }}>— {transfertRecu.document_titre}{transfertRecu.document_auteur && `, ${transfertRecu.document_auteur}`}</p>}
+              </>
+            )}
+
+            <div style={{ background: `${STUDIA_COLOR}10`, border: `1px solid ${STUDIA_COLOR}30`, borderRadius: 8, padding: 12, marginTop: 18, fontSize: 11, color: 'rgba(237,232,219,0.6)', lineHeight: 1.6 }}>
+              💡 <strong>Astuce :</strong> Clique sur <strong>"📝 Injecter dans le brief"</strong> pour pré-remplir automatiquement le sujet (et le titre si vide). Tu pourras ensuite générer le script vidéo.
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 18, flexWrap: 'wrap' }}>
+              <button onClick={() => {
+                const t = transfertRecu.type === 'transcript_youtube'
+                  ? `Transcript YouTube ${transfertRecu.url}\n\n${transfertRecu.texteComplet}`
+                  : transfertRecu.type === 'source_resultat'
+                    ? `${transfertRecu.titre}${transfertRecu.auteur ? ' — ' + transfertRecu.auteur : ''}${transfertRecu.snippet ? '\n\n' + transfertRecu.snippet : ''}${transfertRecu.url ? '\n\n' + transfertRecu.url : ''}`
+                    : `"${transfertRecu.texte}"${transfertRecu.document_titre ? '\n\n— ' + transfertRecu.document_titre : ''}`
+                navigator.clipboard.writeText(t)
+              }} style={{ flex: 1, minWidth: 140, padding: '11px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.15)', background: 'transparent', color: 'rgba(237,232,219,0.7)', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                📋 Copier
+              </button>
+              <button onClick={injecterTransfertDansBrief} style={{ flex: 1, minWidth: 140, padding: '11px', borderRadius: 10, border: 'none', background: STUDIA_COLOR, color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>
+                📝 Injecter dans le brief
+              </button>
+              <button onClick={traiterTransfertCinema} style={{ flex: 1, minWidth: 140, padding: '11px', borderRadius: 10, border: 'none', background: '#5BC78A', color: '#0D1B2A', fontSize: 12, fontWeight: 800, cursor: 'pointer' }}>
+                ✅ Marquer traité
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BANNIERE TRANSFER */}
+      {transfertRecu && (
+        <div style={{ padding: '10px 16px', borderRadius: 10, background: 'rgba(212,168,83,0.1)', border: '1px solid rgba(212,168,83,0.35)', display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexShrink: 0 }}>
+          <span style={{ fontSize: 18 }}>📥</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ fontSize: 12, fontWeight: 700, color: '#D4A853', margin: '0 0 2px' }}>
+              Contenu reçu pour Studio Cinéma
+              {transfertRecu.type === 'transcript_youtube' && <span style={{ marginLeft: 8, fontSize: 10, opacity: 0.7 }}>📺 Transcript YouTube</span>}
+              {transfertRecu.type === 'source_resultat' && <span style={{ marginLeft: 8, fontSize: 10, opacity: 0.7 }}>📄 Résultat Source</span>}
+              {transfertRecu.type === 'source_surlignage' && <span style={{ marginLeft: 8, fontSize: 10, opacity: 0.7 }}>✨ Surlignage</span>}
+            </p>
+            <p style={{ fontSize: 11, color: 'rgba(237,232,219,0.7)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {transfertRecu.type === 'transcript_youtube' && <strong>{transfertRecu.videoId} · {fmtTime(transfertRecu.dureeSec)}</strong>}
+              {transfertRecu.type === 'source_resultat' && <strong>{(transfertRecu.titre || '').slice(0, 60)}</strong>}
+              {transfertRecu.type === 'source_surlignage' && <em>"{(transfertRecu.texte || '').slice(0, 60)}..."</em>}
+            </p>
+          </div>
+          <button onClick={() => setShowTransfertModal(true)} style={{ padding: '6px 12px', borderRadius: 7, border: 'none', background: '#D4A853', color: '#0D1B2A', fontSize: 11, fontWeight: 800, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            👁️ Voir
+          </button>
+          <button onClick={ignorerTransfertCinema} style={{ padding: '6px 10px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: 'rgba(237,232,219,0.5)', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            ✕ Ignorer
+          </button>
+        </div>
+      )}
 
       {errorMsg && (
         <div style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(199,91,78,0.1)', border: '1px solid rgba(199,91,78,0.3)', fontSize: 12, color: '#C75B4E', marginBottom: 14 }}>
