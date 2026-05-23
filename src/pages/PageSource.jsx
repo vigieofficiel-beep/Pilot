@@ -221,7 +221,39 @@ export default function PageSource({ project }) {
   // PHASE B
   const [menuTransferOuvert, setMenuTransferOuvert] = useState(null)
   const [transferToast, setTransferToast] = useState(null)
+// PHASE B bis : ecoute des transferts entrants depuis Module 13 //   
+  const [transfertSourceRecu, setTransfertSourceRecu] = useState(null)
+  const [showTransfertSourceModal, setShowTransfertSourceModal] = useState(false)
 
+  const relireTransfertSource = () => {
+    try {
+      const raw = localStorage.getItem('pilot_transfer_to_source')
+      if (!raw) { setTransfertSourceRecu(null); return }
+      setTransfertSourceRecu(JSON.parse(raw))
+    } catch (err) {
+      console.error('[Source] Erreur lecture transfer:', err)
+      setTransfertSourceRecu(null)
+    }
+  }
+
+  useEffect(() => {
+    relireTransfertSource()
+    const handler = (e) => { if (e.key === 'pilot_transfer_to_source') relireTransfertSource() }
+    window.addEventListener('storage', handler)
+    return () => window.removeEventListener('storage', handler)
+  }, [])
+
+  const ignorerTransfertSource = () => {
+    if (!confirm('Ignorer ce contenu reçu ? Il sera supprimé.')) return
+    localStorage.removeItem('pilot_transfer_to_source')
+    setTransfertSourceRecu(null)
+  }
+
+  const traiterTransfertSource = () => {
+    localStorage.removeItem('pilot_transfer_to_source')
+    setTransfertSourceRecu(null)
+    setShowTransfertSourceModal(false)
+  }
   // PHASE C
   const projetIdChat = project?.id || 'general'
   const chatKey = CHAT_STORAGE_PREFIX + projetIdChat
@@ -963,6 +995,123 @@ Produis l'argumentaire structure (these / preuves / contre-arguments / citations
           color:'#0D1B2A', padding:'12px 20px', borderRadius:10, fontSize:13, fontWeight:700,
           boxShadow:'0 4px 16px rgba(0,0,0,0.4)', maxWidth:400}}>
           {transferToast.message}
+        </div>
+      )}
+
+{/* TOAST TRANSFER */}
+      {transferToast && (
+        <div style={{position:'fixed', top:80, right:30, zIndex:1500,
+          background: transferToast.type==='error' ? 'rgba(199,91,78,0.95)' : 'rgba(91,199,138,0.95)',
+          color:'#0D1B2A', padding:'12px 20px', borderRadius:10, fontSize:13, fontWeight:700,
+          boxShadow:'0 4px 16px rgba(0,0,0,0.4)', maxWidth:400}}>
+          {transferToast.message}
+        </div>
+      )}
+
+      {/* MODAL DETAIL TRANSFER FROM MODULE 13 */}
+      {showTransfertSourceModal && transfertSourceRecu && (
+        <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', zIndex:2100, display:'flex', alignItems:'center', justifyContent:'center', padding:20}}
+             onClick={e=>{if(e.target===e.currentTarget) setShowTransfertSourceModal(false)}}>
+          <div style={{background:'#1a1d24', border:'1px solid rgba(255,255,255,0.1)', borderRadius:16, width:'100%', maxWidth:640, padding:26, maxHeight:'85vh', overflowY:'auto'}}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:18}}>
+              <h3 style={{fontSize:16, fontWeight:700, color:'#EDE8DB', margin:0}}>📥 Contenu reçu pour Source</h3>
+              <button onClick={()=>setShowTransfertSourceModal(false)} style={{background:'rgba(255,255,255,0.06)', border:'none', borderRadius:8, padding:'5px 10px', cursor:'pointer', color:'rgba(237,232,219,0.6)', fontSize:12}}>✕</button>
+            </div>
+            <div style={{background:'rgba(212,168,83,0.06)', border:'1px solid rgba(212,168,83,0.2)', borderRadius:10, padding:14, marginBottom:14, fontSize:11, color:'rgba(237,232,219,0.6)', lineHeight:1.6}}>
+              Origine : <strong style={{color:'#D4A853'}}>{transfertSourceRecu.origin || transfertSourceRecu.type}</strong>
+              {transfertSourceRecu.timestamp && <span> · {new Date(transfertSourceRecu.timestamp).toLocaleString('fr-FR')}</span>}
+            </div>
+
+            {transfertSourceRecu.type === 'transcript_youtube' && (
+              <>
+                <div style={{marginBottom:14}}>
+                  <label style={{fontSize:10, fontWeight:700, color:'rgba(237,232,219,0.4)', textTransform:'uppercase', letterSpacing:'0.08em', display:'block', marginBottom:4}}>Vidéo YouTube</label>
+                  <a href={transfertSourceRecu.url} target="_blank" rel="noopener noreferrer" style={{fontSize:13, color:project.color, wordBreak:'break-all', textDecoration:'none'}}>↗ {transfertSourceRecu.url}</a>
+                </div>
+                <div style={{display:'flex', gap:8, marginBottom:14, flexWrap:'wrap'}}>
+                  <span style={{fontSize:10, padding:'3px 8px', borderRadius:5, background:'rgba(255,255,255,0.05)', color:'rgba(237,232,219,0.6)', fontWeight:700}}>📺 {transfertSourceRecu.videoId}</span>
+                  <span style={{fontSize:10, padding:'3px 8px', borderRadius:5, background:'rgba(255,255,255,0.05)', color:'rgba(237,232,219,0.6)', fontWeight:700}}>🌐 {transfertSourceRecu.langue?.toUpperCase()}</span>
+                  <span style={{fontSize:10, padding:'3px 8px', borderRadius:5, background:'rgba(255,255,255,0.05)', color:'rgba(237,232,219,0.6)', fontWeight:700}}>⏱️ {Math.round(transfertSourceRecu.dureeSec)}s</span>
+                  {transfertSourceRecu.analyse && <span style={{fontSize:10, padding:'3px 8px', borderRadius:5, background:'rgba(91,199,138,0.1)', color:'#5BC78A', fontWeight:700}}>✨ Analyse IA dispo</span>}
+                </div>
+                {transfertSourceRecu.analyse?.resume_court && (
+                  <div style={{marginBottom:14}}>
+                    <label style={{fontSize:10, fontWeight:700, color:'rgba(237,232,219,0.4)', textTransform:'uppercase', letterSpacing:'0.08em', display:'block', marginBottom:4}}>Résumé IA</label>
+                    <p style={{fontSize:12, color:'rgba(237,232,219,0.7)', margin:0, lineHeight:1.6, padding:10, background:'rgba(0,0,0,0.2)', borderRadius:6}}>{transfertSourceRecu.analyse.resume_court}</p>
+                  </div>
+                )}
+                <div style={{marginBottom:14}}>
+                  <label style={{fontSize:10, fontWeight:700, color:'rgba(237,232,219,0.4)', textTransform:'uppercase', letterSpacing:'0.08em', display:'block', marginBottom:4}}>Aperçu du transcript</label>
+                  <p style={{fontSize:11, color:'rgba(237,232,219,0.6)', margin:0, lineHeight:1.5, padding:10, background:'rgba(0,0,0,0.2)', borderRadius:6, maxHeight:180, overflowY:'auto', whiteSpace:'pre-wrap'}}>
+                    {transfertSourceRecu.texteComplet.slice(0, 800)}{transfertSourceRecu.texteComplet.length > 800 && '…'}
+                  </p>
+                  <p style={{fontSize:9, color:'rgba(237,232,219,0.4)', margin:'4px 0 0', textAlign:'right'}}>{transfertSourceRecu.texteComplet.length.toLocaleString('fr-FR')} caractères au total</p>
+                </div>
+              </>
+            )}
+
+            <div style={{background:`${project.color}10`, border:`1px solid ${project.color}30`, borderRadius:8, padding:12, marginTop:18, fontSize:11, color:'rgba(237,232,219,0.6)', lineHeight:1.6}}>
+              💡 <strong>Astuce :</strong> Le transcript YouTube est utile comme source documentaire. Tu peux le copier ou télécharger en .md pour l'archiver.
+            </div>
+
+            <div style={{display:'flex', gap:8, marginTop:18, flexWrap:'wrap'}}>
+              <button onClick={()=>{
+                const t = `Transcript YouTube\nURL: ${transfertSourceRecu.url}\nLangue: ${transfertSourceRecu.langue}\nDurée: ${Math.round(transfertSourceRecu.dureeSec)}s\n\n${transfertSourceRecu.texteComplet}`
+                navigator.clipboard.writeText(t)
+              }} style={{flex:1, minWidth:140, padding:'11px', borderRadius:10, border:'1px solid rgba(255,255,255,0.15)', background:'transparent', color:'rgba(237,232,219,0.7)', fontSize:12, fontWeight:700, cursor:'pointer'}}>
+                📋 Copier
+              </button>
+              <button onClick={()=>{
+                const lines = [
+                  `# Transcript YouTube`,
+                  `URL : ${transfertSourceRecu.url}`,
+                  `Langue : ${transfertSourceRecu.langue}`,
+                  `Durée : ${Math.round(transfertSourceRecu.dureeSec)}s`,
+                  `Reçu le : ${new Date(transfertSourceRecu.timestamp).toLocaleString('fr-FR')}`,
+                  ``,
+                  `## Texte complet`,
+                  ``,
+                  transfertSourceRecu.texteComplet,
+                ]
+                if (transfertSourceRecu.analyse) {
+                  lines.push('', '## Analyse IA', '', transfertSourceRecu.analyse.resume_court || '')
+                }
+                const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = `transcript_${transfertSourceRecu.videoId}.md`
+                a.click()
+                setTimeout(() => URL.revokeObjectURL(url), 1000)
+              }} style={{flex:1, minWidth:140, padding:'11px', borderRadius:10, border:'none', background:project.color, color:'#0D1B2A', fontSize:12, fontWeight:800, cursor:'pointer'}}>
+                📥 Télécharger .md
+              </button>
+              <button onClick={traiterTransfertSource} style={{flex:1, minWidth:140, padding:'11px', borderRadius:10, border:'none', background:'#5BC78A', color:'#0D1B2A', fontSize:12, fontWeight:800, cursor:'pointer'}}>
+                ✅ Marquer traité
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BANNIERE TRANSFER FROM MODULE 13 */}
+      {transfertSourceRecu && (
+        <div style={{padding:'10px 16px', borderRadius:10, background:'rgba(212,168,83,0.1)', border:'1px solid rgba(212,168,83,0.35)', display:'flex', alignItems:'center', gap:12, flexShrink:0}}>
+          <span style={{fontSize:18}}>📥</span>
+          <div style={{flex:1, minWidth:0}}>
+            <p style={{fontSize:12, fontWeight:700, color:'#D4A853', margin:'0 0 2px'}}>
+              Transcript YouTube reçu <span style={{marginLeft:8, fontSize:10, opacity:0.7}}>📺 Module 13</span>
+            </p>
+            <p style={{fontSize:11, color:'rgba(237,232,219,0.7)', margin:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+              <strong>{transfertSourceRecu.videoId}</strong> · {Math.round(transfertSourceRecu.dureeSec)}s · {transfertSourceRecu.langue?.toUpperCase()}
+            </p>
+          </div>
+          <button onClick={()=>setShowTransfertSourceModal(true)} style={{padding:'6px 12px', borderRadius:7, border:'none', background:'#D4A853', color:'#0D1B2A', fontSize:11, fontWeight:800, cursor:'pointer', whiteSpace:'nowrap'}}>
+            👁️ Voir
+          </button>
+          <button onClick={ignorerTransfertSource} style={{padding:'6px 10px', borderRadius:7, border:'1px solid rgba(255,255,255,0.1)', background:'transparent', color:'rgba(237,232,219,0.5)', fontSize:11, fontWeight:700, cursor:'pointer', whiteSpace:'nowrap'}}>
+            ✕ Ignorer
+          </button>
         </div>
       )}
 
